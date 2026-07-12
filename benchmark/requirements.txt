@@ -1,0 +1,7 @@
+dataclasses-json
+hjson
+numpy
+protobuf
+scipy
+gitpython
+matplotlib
