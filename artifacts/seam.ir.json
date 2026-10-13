@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "num_detectors": 3,
+  "num_observables": 1,
+  "detector_coordinates": [
+    [
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ],
+    [
+      0.0,
+      0.0,
+      2.0
+    ]
+  ],
+  "errors": [
+    {
+      "probability": 0.1,
+      "components": [
+        {
+          "detectors": [
+            0,
+            1
+          ],
+          "observables": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "probability": 0.2,
+      "components": [
+        {
+          "detectors": [
+            1,
+            2
+          ],
+          "observables": []
+        }
+      ]
+    },
+    {
+      "probability": 0.05,
+      "components": [
+        {
+          "detectors": [
+            2
+          ],
+          "observables": []
+        }
+      ]
+    }
+  ],
+  "provenance": {
+    "stim_version": "1.15.0",
+    "input_kind": "dem",
+    "input_sha256": "071972344174af59774c80861e56631bf997abb1ad152528863ed46c92a74c09"
+  },
+  "window_annotations": {
+    "schema_version": 1,
+    "annotation_only": true,
+    "windows": [
+      {
+        "id": "top-0",
+        "layer": 0,
+        "commit": [
+          0
+        ],
+        "buffer": [
+          1
+        ],
+        "temporal_boundary": "open",
+        "commit_buffer_seams": [
+          {
+            "error": 0,
+            "component": 0
+          }
+        ],
+        "outer_crossings": [
+          {
+            "error": 1,
+            "component": 0
+          }
+        ]
+      },
+      {
+        "id": "bottom-0",
+        "layer": 1,
+        "commit": [
+          1
+        ],
+        "buffer": [],
+        "temporal_boundary": "closed",
+        "commit_buffer_seams": [],
+        "outer_crossings": [
+          {
+            "error": 0,
+            "component": 0
+          },
+          {
+            "error": 1,
+            "component": 0
+          }
+        ]
+      }
+    ]
+  }
+}
