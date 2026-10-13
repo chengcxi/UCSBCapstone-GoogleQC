@@ -1,0 +1,3 @@
+-r requirements.txt
+# Native ErrorPatternReader/reference MWPM integration tests, not a runtime dependency.
+fusion-blossom==0.2.13

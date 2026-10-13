@@ -1,0 +1,6 @@
+detector(0, 0, 0) D0
+detector(0, 0, 1) D1
+detector(0, 0, 2) D2
+error(0.1) D0 D1 L0
+error(0.2) D1 D2
+error(0.05) D2
