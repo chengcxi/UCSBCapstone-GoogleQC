@@ -1,3 +1,0 @@
-Syndrome Pattern v1.0 microblossom-toolchain
-{"vertex_num":4,"weighted_edges":[[0,1,220],[1,2,138],[2,3,294]],"virtual_vertices":[3]}
-[{"i":0.0,"j":0.0,"t":0.0},{"i":0.0,"j":0.0,"t":1.0},{"i":0.0,"j":0.0,"t":2.0},{"i":0.0,"j":0.0,"t":0.0}]
