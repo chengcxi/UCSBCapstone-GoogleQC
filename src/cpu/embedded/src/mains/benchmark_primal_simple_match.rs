@@ -1,6 +1,5 @@
 use crate::binding::*;
 use crate::util::*;
-use core::cell::UnsafeCell;
 use core::hint::black_box;
 use konst::{option, primitive::parse_usize, result::unwrap_ctx};
 use micro_blossom_nostd::benchmark::primal_simple_match::*;
@@ -16,12 +15,14 @@ make -C ../../fpga/Xilinx/VMK180_BRAM run_r5
 // 3800 guarantees to support up to d=15, but given physical error rate below threshold, it supports d=31 without a problem
 pub const MAX_NODE_NUM: usize = unwrap_ctx!(parse_usize(option::unwrap_or!(option_env!("MAX_NODE_NUM"), "3600")));
 
-static mut TESTER: UnsafeCell<PrimalSimpleMatch<MAX_NODE_NUM>> = UnsafeCell::new(PrimalSimpleMatch::new());
+static mut TESTER: PrimalSimpleMatch<MAX_NODE_NUM> = PrimalSimpleMatch::new();
 
 pub fn main() {
     println!("[benchmark] PrimalSimpleMatch");
 
-    let tester = unsafe { TESTER.get().as_mut().unwrap() };
+    // SAFETY: the single-threaded benchmark is the only accessor of TESTER.
+    // Start from a raw pointer to avoid a reference to the mutable static itself.
+    let tester = unsafe { &mut *core::ptr::addr_of_mut!(TESTER) };
 
     let mut benchmarker = Benchmarker::new(|| {
         black_box(tester.run(MAX_NODE_NUM / 2));
@@ -61,7 +62,7 @@ When allocating on stack, MAX_NODE_NUM = 50, it all seems fine;
                           MAX_NODE_NUM = 64, the timer value are all 0 and even stuck at A72 core;
 Note that each element takes 32+2 bytes, so 128 elements take 4352 bytes, exceeding the 4KB stack space.
 
-Although I don't understand how `static mut UnsafeCell` would place the variable, it seems to be in the `.data` segment.
+Although I don't understand how `static mut` would place the variable, it seems to be in the `.data` segment.
 If loading the ELF results in overlapping in the .data segment, then it could trigger similar effects.
 The triggering MAX_NODE_NUM, however, is different. Now 110 is safe but 120 fails: the time values are all 0.
 This corresponds to 8KB space, but why `.data` segment would be limited anyway?

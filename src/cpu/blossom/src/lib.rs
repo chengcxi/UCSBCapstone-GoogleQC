@@ -12,11 +12,13 @@ pub mod dual_module_looper;
 pub mod dual_module_scala;
 pub mod example_codes;
 pub mod mwpm_solver;
+pub mod parallel_window;
 pub mod primal_module_embedded_adaptor;
 pub mod resources;
 pub mod simulation_tcp_client;
 pub mod transform_syndromes;
 pub mod util;
+pub mod window_oracle;
 
 use lazy_static::lazy_static;
 use std::sync::Mutex;

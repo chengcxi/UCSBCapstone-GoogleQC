@@ -1,0 +1,9 @@
+# A noisy repeated Z measurement. The logical flip is D0 XOR D1.
+R 0
+X_ERROR(0.1) 0
+M 0
+DETECTOR(0, 0, 0) rec[-1]
+X_ERROR(0.2) 0
+M 0
+DETECTOR(0, 0, 1) rec[-1] rec[-2]
+OBSERVABLE_INCLUDE(0) rec[-1]
