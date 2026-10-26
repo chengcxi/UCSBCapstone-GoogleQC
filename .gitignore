@@ -50,7 +50,6 @@ bin/*
 /*.vhd
 /*.v
 *.cf
-*.json
 *.syndromes
 *.defects
 *.vcd
