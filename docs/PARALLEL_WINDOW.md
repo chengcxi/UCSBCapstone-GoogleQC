@@ -65,8 +65,10 @@ contribute a single detector).  Repeated edges cancel (`e⊕e = 0`).
 | Logical observable | Commits to the global parity (same `logical_parity` accumulator). |
 
 Overlapping commits within the same layer are forbidden; they would imply two
-windows claiming the same logical correction.  The validator in
-`window_oracle::validate_window_layers` rejects this.
+windows claiming the same logical correction. The validator in
+`window_oracle::validate_window_layers` rejects this. The CLI's executable-shot
+adapter additionally requires **exactly one** commit owner for each detector
+across both layers; annotations alone may represent non-executable plans.
 
 ### 2.3 Generation schemes
 
@@ -165,15 +167,21 @@ The circuit-to-graph compiler in `src/lib.rs` already:
 * extracts a DEM with `num_detectors`, `num_observables`, and per-error
   `(detectors, observables, probability)`,
 * merges duplicate mechanisms, quantises even weights `w = 2·round(scale/2 ·
-  ln((1-p)/p))`, and builds `MicroBlossomSingle` plus `edge_metadata`,
+  ln((1-p)/p))`, and builds a global `Graph` wrapper with `edge_metadata`,
 * validates window *annotations* (commit/buffer detector lists, layer labels,
   same-layer commit exclusivity).
 
-The remaining items from the plan — actual graph cutting, global/local
-detector maps, open vs closed temporal boundaries, and the residual oracle
-— are now implemented in this crate.  The toolchain's `window_annotations`
-JSON is the source of truth for `WindowSpec`; its `t` values are taken from
-`detector_coordinates[*][2]`.
+The CLI now calls `src/window.rs::build_window_graphs` for annotated IR and
+writes the actual local graphs and maps to `PREFIX.windows.json`. With real
+syndromes from `--shots` or `--sample-shots`, `src/decoding.rs` converts those
+same local graphs into `EncodedWindow`s, instantiates the CPU
+`ParallelWindowDecoder::from_encoded`, and verifies global residual/parity before
+writing `PREFIX.corrections.json`. It requires complete time slices, unique
+commit ownership and explicit `t` coordinates, and checks the cut graphs'
+edge endpoints, weights and global index maps before solving. The original
+programmatic `WindowSpec`/`build_window_initializer`
+path remains separate; detector-ID annotations are **not** automatically
+translated into time-interval specs. Both CPU paths run sequential window loops.
 
 ## 7. What remains (Sprints 2–4)
 
@@ -190,15 +198,13 @@ JSON is the source of truth for `WindowSpec`; its `t` values are taken from
 
 ## 8. Testing
 
-* `cargo test --locked -p micro-blossom-nostd -- window` — geometry and oracle
-  unit tests (odd parity, seam, buffer discard).
+* `cargo test --locked --lib decoding` — root toolchain's real two-layer
+  graph/shot bridge and fail-closed schedule checks.
 
-* `cargo test --locked -p micro-blossom -- parallel_window` — window
-  initializer open/closed, contiguous/Riverlane generation, tiny line-graph
-  decode, and a regression that compares parallel vs global logical parity on
-  a `d=3` phenomenological surface-code fixture (64 shots).
+* `cargo test --release --locked --manifest-path src/cpu/blossom/Cargo.toml --lib parallel_window`
+  — programmatic CPU window decoder tests.
 
-* `python -m unittest tests.test_parallel_window_prototype` — the pure-Python
-  oracle on hand-worked seam examples; runs without a Rust toolchain.
-
-See `artifact/README.md` for the reproduction commands.
+* `python3 -m unittest tests.test_parallel_window` — pure-Python seam example
+  (no Rust toolchain). With Cargo and Stim installed, run
+  `RUN_RUST_TESTS=1 python -m unittest tests.test_rust_cli` for actual CLI
+  window cutting, supplied/sampled shots, parity, multi-label edges, and errors.

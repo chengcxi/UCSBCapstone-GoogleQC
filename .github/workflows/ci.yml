@@ -14,6 +14,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify example window plans are included in the checkout
+        run: |
+          for plan in examples/windows.json examples/parallel_window_windows.json examples/tiny-windows.json examples/seam-shots.json; do
+            if ! git ls-files --error-unmatch "$plan" >/dev/null 2>&1 || ! test -f "$plan"; then
+              echo "::error::$plan is missing. Commit the plan file (check the *.json ignore rule)."
+              exit 1
+            fi
+          done
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -23,11 +31,27 @@ jobs:
       - run: rustc --version --verbose && cargo --version
       - run: python -m pip install -r requirements-dev.txt
       - run: cargo fmt --check
-      - run: cargo test --locked
+      - name: Rust tests
+        shell: bash
+        run: |
+          set -o pipefail
+          CARGO_TERM_COLOR=never cargo test --locked 2>&1 | tee /tmp/microblossom-rust-tests.log || {
+            # Annotations remain available via the Checks API even when a
+            # runner's raw log host is inaccessible to a downstream client.
+            python .github/scripts/annotate_cargo_failure.py 'Rust tests' /tmp/microblossom-rust-tests.log
+            exit 1
+          }
       - run: cargo doc --locked --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
-      - run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Rust clippy
+        shell: bash
+        run: |
+          set -o pipefail
+          CARGO_TERM_COLOR=never cargo clippy --locked --all-targets -- -D warnings 2>&1 | tee /tmp/microblossom-clippy.log || {
+            python .github/scripts/annotate_cargo_failure.py 'Rust clippy' /tmp/microblossom-clippy.log
+            exit 1
+          }
       - run: python -m unittest discover -s tests -v
         env:
           RUN_RUST_TESTS: '1'

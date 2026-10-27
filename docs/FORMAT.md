@@ -37,22 +37,28 @@ from `get_detector_coordinates()` so coordinate shifts are resolved too.
 Input is a JSON object with exactly one nonempty `windows` list. Each entry has exactly:
 `id` (unique nonempty string), `layer` (0 or 1), `commit` (nonempty detector list),
 `buffer` (detector list; empty for layer 1). Both lists must be unique, in range,
-and disjoint within a window. Same-layer commit regions must be disjoint; buffer overlap and cross-layer
-overlap are permitted intentionally.
+and disjoint within a window. Same-layer commit regions must be disjoint;
+buffer overlap is allowed. The annotation-only schema also accepts cross-layer
+commit overlap, but **executable shot decoding rejects it** because the two
+layers would claim the same detector.
 
 Output adds `temporal_boundary`, `commit_buffer_seams` and `outer_crossings` to each
 entry. Crossings reference `{ "error": index, "component": index }` in the IR.
 Rust independently validates the annotation schema, layer/boundary agreement and
 recomputed crossing references on every import, including direct IR export.
-No connectivity changes or decoder behavior are implied. The output sets
-`annotation_only: true`. Membership across windows does not prove a valid schedule.
+The **IR metadata** sets `annotation_only: true` and never changes the global
+graph. The CLI now *separately* calls `build_window_graphs` for annotated IR and
+writes `PREFIX.windows.json`. Membership alone still does not prove a valid
+decoding schedule.
 
 The physical boundary of a code is not an omitted detector outside a time window.
 A one-detector DEM error has a physical boundary endpoint and is not automatically
 an artificial temporal cut. A closed layer-1 *temporal* boundary must not remove
-valid physical boundary edges. Commit ownership of correction edges and logical
-observables needs a separate, explicit algorithm; detector membership alone is
-insufficient, so this version does not guess it.
+valid physical boundary edges. For shot decoding, the runtime requires complete,
+contiguous time slices with explicit `t` coordinates and coverage by commit
+regions. It dates two-detector edges by midpoint (one-detector physical boundary
+edges by their real detector) and never commits a rewired outer-cut edge. Ambiguous
+ownership, uncovered detectors and unmatched residual syndromes are errors.
 
 ## Rust output
 
@@ -89,6 +95,33 @@ There are no shot records. This is the input to upstream `micro_blossom parser`;
 upstream derives hardware-specific fields instead of this project inventing them.
 The upstream parser uses even weights. The integrated CLI retains `.ir.json` alongside these outputs.
 
+With `--windows` on `compile` (or annotated IR on `export`) the CLI also writes
+`OUTPUT_PREFIX.windows.json`, with `schema_version: 1` and a `windows` list.
+Each local `WindowGraph` includes its `window_id`, `layer`, `temporal_boundary`,
+local `initializer`, `positions`, `edge_metadata`, `detector_map` (local vertex
+to global detector, `null` for virtuals), and `edge_map` (local edge to global
+edge). Global `.graph.json` remains unchanged. No shots are fabricated by
+window cutting alone.
+
+With `--shots INPUT.json` or `compile --sample-shots COUNT` the CPU decoder
+writes `OUTPUT_PREFIX.corrections.json` after checking the **global** residual
+and observable parity of *every* shot. Explicit shot input has the strict shape:
+
+```json
+{"shots": [{"defects": [0, 2], "observables": [0]}]}
+```
+
+`observables` is optional and, if present, means actual measured flips, not the
+prediction. IDs must be unique and in range. The output has `schema_version: 1`,
+`num_detectors`, `num_observables`, and a `shots` list. Each shot has `defects`,
+`committed_edges` (global edge IDs), `predicted_observables`, and an empty
+`residual_syndrome`. If actual labels were supplied/sampled it also has sorted
+`actual_observables` and `logical_error` (their mismatch with the prediction).
+An invalid shot or nonzero residual fails the invocation before any files are
+published. `--sample-shots` takes a reproducible `--seed` (default 0), uses
+Stim's circuit/DEM sampler and is compile-only. `--shots` can also run on
+annotated IR via pure-Rust `export`.
+
 The converter bounds individual weights,
 not the resource limits, total growth or accumulator widths of a particular FPGA;
 those must be checked before hardware generation.
@@ -103,7 +136,10 @@ those must be checked before hardware generation.
 - Hardware resources/timing, admissible zero-weight behavior across all backends.
 - Logical-error equivalence after weight quantization or correlation approximation.
 - Runtime mutation of weights, virtual flags, offloading or parity reporters.
-- Correct two-layer scheduling, seam residual parity and commit ownership.
+- Concurrent FPGA scheduling and real-time transport. The implemented CPU
+  two-layer path uses sequential window loops, verified graph/parity outputs and
+  strict time-slice plans; it does not establish correctness for arbitrary
+  lattice-surgery geometries.
 - General lattice-surgery and defect-adapted circuit generation.
 
 ## Correction parity (not window residual decoding)

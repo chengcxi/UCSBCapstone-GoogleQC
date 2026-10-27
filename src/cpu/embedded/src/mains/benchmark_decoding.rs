@@ -29,7 +29,7 @@ make -C ../../fpga/Xilinx/VMK180_Micro_Blossom run_a72
 
 // guarantees decoding up to d=39
 pub const MAX_NODE_NUM: usize = unwrap_ctx!(parse_usize(option::unwrap_or!(option_env!("MAX_NODE_NUM"), "65536")));
-pub const DEFECTS: &'static [u32] = &include_bytes!("./embedded.defects" as u32le);
+pub const DEFECTS: &'static [u32] = &include!(concat!(env!("OUT_DIR"), "/embedded_defects.rs"));
 
 /// by default using batch decoding
 pub const USE_LAYER_FUSION: bool = option_env!("USE_LAYER_FUSION").is_some();

@@ -109,6 +109,21 @@ def export(path, kind, windows=None):
     return ir, str(dem)
 
 
+def sample_shots(path, kind, count, seed):
+    """Return actual Stim detector/observable samples with global IR IDs."""
+    text = path.read_text()
+    if kind == "circuit":
+        detections, observables = stim.Circuit(text).compile_detector_sampler(seed=seed).sample(
+            count, separate_observables=True)
+    else:
+        detections, observables, _ = stim.DetectorErrorModel(text).compile_sampler(seed=seed).sample(count)
+    return {"shots": [
+        {"defects": [i for i, bit in enumerate(det) if bit],
+         "observables": [i for i, bit in enumerate(obs) if bit]}
+        for det, obs in zip(detections, observables)
+    ]}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path)
@@ -116,11 +131,25 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--dem-output", type=Path)
     parser.add_argument("--windows", type=Path)
+    parser.add_argument("--sample-shots", type=int)
+    parser.add_argument("--seed", type=int)
     args = parser.parse_args()
     try:
+        if args.sample_shots is not None:
+            if not 1 <= args.sample_shots <= 100_000 or args.windows is None or str(args.output) != "-":
+                raise ValueError("--sample-shots requires --windows, --output -, and 1..100000 shots")
+            if args.seed is not None and not 0 <= args.seed < 2**64:
+                raise ValueError("--seed must be a nonnegative 64-bit integer")
+        elif args.seed is not None:
+            raise ValueError("--seed requires --sample-shots")
         windows = json.loads(args.windows.read_text()) if args.windows else None
         ir, dem = export(args.input, args.kind, windows)
-        serialized = json.dumps(ir, indent=2, allow_nan=False) + "\n"
+        if args.sample_shots is not None:
+            result = {"ir": ir, "shots": sample_shots(
+                args.input, args.kind, args.sample_shots, args.seed or 0)}
+        else:
+            result = ir
+        serialized = json.dumps(result, indent=2, allow_nan=False) + "\n"
         if str(args.output) == "-":
             sys.stdout.write(serialized)
         else:

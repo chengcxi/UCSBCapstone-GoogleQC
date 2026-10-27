@@ -1,3 +1,5 @@
+use microblossom_toolchain::decoding::{CorrectionBatch, ShotBatch, decode_batch, prepare_decoder};
+use microblossom_toolchain::window::{WindowGraph, build_window_graphs};
 use microblossom_toolchain::{Dem, Graph, convert};
 use std::{env, fs, path::PathBuf, process, process::Command};
 
@@ -12,14 +14,18 @@ Usage:
 Options:
   --kind circuit|dem       Compile input type (default: circuit)
   --python EXECUTABLE      Python with Stim installed (default: MICROBLOSSOM_PYTHON or python3)
-  --windows PLAN.json     Window annotations (compile only; does not cut graphs)
+  --windows PLAN.json     Annotate and cut window graphs (compile only)
+  --shots INPUT.json      Decode supplied detector shots (requires annotated windows)
+  --sample-shots COUNT    Sample Stim and decode COUNT shots (compile only, requires --windows)
+  --seed NUMBER           Reproducible Stim sampling seed (with --sample-shots; default: 0)
   --weight-scale NUMBER   Positive, finite log-odds weight scale (default: 100)
   --allow-correlated      Explicitly approximate split errors as independent edges
   --micro-blossom BINARY  Run upstream parser and verify graph/edge index preservation
 
 Writes PREFIX.ir.json, PREFIX.graph.json, PREFIX.syndromes.
-With --micro-blossom, also writes PREFIX.hardware.json.
-Requires Python + Stim only for compile; export is a standalone Rust operation.";
+With annotated windows writes PREFIX.windows.json; with shot input also
+writes PREFIX.corrections.json. With --micro-blossom writes PREFIX.hardware.json.
+Requires Python + Stim only for compile; export and supplied shots are Rust-only.";
 
 struct Options {
     compile: bool,
@@ -28,6 +34,9 @@ struct Options {
     kind: String,
     python: String,
     windows: Option<PathBuf>,
+    shots: Option<PathBuf>,
+    sample_shots: Option<usize>,
+    seed: Option<u64>,
     scale: f64,
     correlated: bool,
     upstream: Option<String>,
@@ -45,6 +54,9 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
         kind: "circuit".into(),
         python: env::var("MICROBLOSSOM_PYTHON").unwrap_or_else(|_| "python3".into()),
         windows: None,
+        shots: None,
+        sample_shots: None,
+        seed: None,
         scale: 100.0,
         correlated: false,
         upstream: None,
@@ -79,7 +91,15 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
         }
         if !matches!(
             flag,
-            "--output" | "--kind" | "--python" | "--windows" | "--weight-scale" | "--micro-blossom"
+            "--output"
+                | "--kind"
+                | "--python"
+                | "--windows"
+                | "--shots"
+                | "--sample-shots"
+                | "--seed"
+                | "--weight-scale"
+                | "--micro-blossom"
         ) {
             return Err(format!("unknown option: {flag}"));
         }
@@ -95,6 +115,20 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
             "--kind" => options.kind = value.clone(),
             "--python" => options.python = value.clone(),
             "--windows" => options.windows = Some(value.into()),
+            "--shots" => options.shots = Some(value.into()),
+            "--sample-shots" if !options.compile => {
+                return Err("--sample-shots is only valid for compile".into());
+            }
+            "--sample-shots" => {
+                let count: usize = value.parse().map_err(|_| "invalid --sample-shots count")?;
+                if !(1..=100_000).contains(&count) {
+                    return Err("--sample-shots must be between 1 and 100000".into());
+                }
+                options.sample_shots = Some(count);
+            }
+            "--seed" => {
+                options.seed = Some(value.parse().map_err(|_| "invalid --seed")?);
+            }
             "--weight-scale" => {
                 options.scale = value.parse().map_err(|_| "invalid weight scale")?
             }
@@ -112,12 +146,29 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
     if !options.scale.is_finite() || options.scale <= 0.0 {
         return Err("weight scale must be positive and finite".into());
     }
+    if options.shots.is_some() && options.sample_shots.is_some() {
+        return Err("--shots and --sample-shots are mutually exclusive".into());
+    }
+    if options.sample_shots.is_some() && options.windows.is_none() {
+        return Err("--sample-shots requires --windows".into());
+    }
+    if options.seed.is_some() && options.sample_shots.is_none() {
+        return Err("--seed requires --sample-shots".into());
+    }
     Ok(options)
 }
 
-fn extract_ir(options: &Options) -> Result<String, Box<dyn std::error::Error>> {
+#[derive(serde::Deserialize)]
+struct SampledBridgeOutput {
+    ir: serde_json::Value,
+    shots: ShotBatch,
+}
+
+fn extract_ir(
+    options: &Options,
+) -> Result<(String, Option<ShotBatch>), Box<dyn std::error::Error>> {
     if !options.compile {
-        return Ok(fs::read_to_string(&options.input)?);
+        return Ok((fs::read_to_string(&options.input)?, None));
     }
     // Embed the bridge so installed binaries do not depend on a checkout path.
     let mut command = Command::new(&options.python);
@@ -127,6 +178,12 @@ fn extract_ir(options: &Options) -> Result<String, Box<dyn std::error::Error>> {
         .args(["--kind", &options.kind, "--output", "-"]);
     if let Some(windows) = &options.windows {
         command.arg("--windows").arg(windows);
+    }
+    if let Some(count) = options.sample_shots {
+        command.arg("--sample-shots").arg(count.to_string());
+        command
+            .arg("--seed")
+            .arg(options.seed.unwrap_or(0).to_string());
     }
     let output = command.output().map_err(|e| {
         format!(
@@ -142,7 +199,17 @@ fn extract_ir(options: &Options) -> Result<String, Box<dyn std::error::Error>> {
         )
         .into());
     }
-    Ok(String::from_utf8(output.stdout)?)
+    let stdout = String::from_utf8(output.stdout)?;
+    if options.sample_shots.is_some() {
+        let sampled: SampledBridgeOutput = serde_json::from_str(&stdout)
+            .map_err(|e| format!("invalid sampled Stim bridge output: {e}"))?;
+        Ok((
+            serde_json::to_string_pretty(&sampled.ir)? + "\n",
+            Some(sampled.shots),
+        ))
+    } else {
+        Ok((stdout, None))
+    }
 }
 
 struct Staging(PathBuf);
@@ -152,7 +219,13 @@ impl Drop for Staging {
     }
 }
 
-fn publish(options: &Options, ir: &str, graph: &Graph) -> Result<(), Box<dyn std::error::Error>> {
+fn publish(
+    options: &Options,
+    ir: &str,
+    graph: &Graph,
+    windows: Option<&[WindowGraph]>,
+    corrections: Option<&CorrectionBatch>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let parent = options
         .prefix
         .parent()
@@ -175,6 +248,21 @@ fn publish(options: &Options, ir: &str, graph: &Graph) -> Result<(), Box<dyn std
         serde_json::to_string_pretty(graph)? + "\n",
     )?;
     fs::write(staging.0.join("syndromes"), graph.parser_input()?)?;
+    if let Some(windows) = windows {
+        let bundle = serde_json::json!({"schema_version": 1, "windows": windows});
+        fs::write(
+            staging.0.join("windows.json"),
+            serde_json::to_string_pretty(&bundle)? + "\n",
+        )?;
+        files.push("windows.json");
+    }
+    if let Some(corrections) = corrections {
+        fs::write(
+            staging.0.join("corrections.json"),
+            serde_json::to_string_pretty(corrections)? + "\n",
+        )?;
+        files.push("corrections.json");
+    }
     if let Some(binary) = &options.upstream {
         let output = Command::new(binary)
             .arg("parser")
@@ -261,7 +349,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return check_correction(&args[1..]);
     }
     let options = parse(args)?;
-    let ir = extract_ir(&options)?;
+    let (ir, sampled_shots) = extract_ir(&options)?;
     let dem: Dem = serde_json::from_str(&ir).map_err(|e| format!("invalid DEM IR: {e}"))?;
     let graph = convert(dem, options.scale, options.correlated)?;
     if graph.correlated_components_approximated {
@@ -278,7 +366,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "warning: {zero_weights} edge(s) have zero weight (p=0.5 or quantization); verify backend support"
         );
     }
-    publish(&options, &ir, &graph)
+    // Do all window cutting and decoding before touching existing outputs.
+    let windows = if graph.window_annotations.is_null() {
+        None
+    } else {
+        Some(build_window_graphs(&graph)?)
+    };
+    let shots = match options.shots.as_ref() {
+        Some(path) => Some(
+            serde_json::from_str::<ShotBatch>(&fs::read_to_string(path)?)
+                .map_err(|e| format!("invalid shots input: {e}"))?,
+        ),
+        None => sampled_shots,
+    };
+    let corrections = if let Some(shots) = shots {
+        let cut = windows
+            .as_deref()
+            .ok_or("--shots requires annotated windows")?;
+        let decoder = prepare_decoder(&graph, cut)?;
+        Some(decode_batch(&graph, &decoder, shots)?)
+    } else {
+        None
+    };
+    publish(
+        &options,
+        &ir,
+        &graph,
+        windows.as_deref(),
+        corrections.as_ref(),
+    )
 }
 
 fn main() {

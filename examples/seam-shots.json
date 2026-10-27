@@ -1,0 +1,9 @@
+{
+  "shots": [
+    {"defects": [0, 2], "observables": [0]},
+    {"defects": [0, 1], "observables": [0]},
+    {"defects": [1, 2], "observables": []},
+    {"defects": [2], "observables": []},
+    {"defects": [], "observables": []}
+  ]
+}

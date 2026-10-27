@@ -50,6 +50,12 @@ bin/*
 /*.vhd
 /*.v
 *.cf
+*.json
+# These are source-controlled window plans used by the CLI examples and CI tests.
+!/examples/windows.json
+!/examples/parallel_window_windows.json
+!/examples/tiny-windows.json
+!/examples/seam-shots.json
 *.syndromes
 *.defects
 *.vcd

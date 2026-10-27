@@ -67,8 +67,8 @@ pub struct WindowGraph {
     /// carry observables, so this sidecar must be shipped alongside
     /// `hardware.json`.
     pub edge_metadata: Vec<crate::EdgeMetadata>,
-    /// Mapping `local_detector -> global_detector` for syndrome translation.
-    /// `None` for the synthetic temporal virtual detector.
+    /// Mapping `local vertex -> global detector` for syndrome translation.
+    /// `None` for physical or synthetic temporal virtual vertices.
     pub detector_map: Vec<Option<usize>>,
     /// Mapping `local_edge -> global_edge`
     pub edge_map: Vec<usize>,
@@ -122,34 +122,34 @@ pub fn build_window_graphs(graph: &Graph) -> Result<Vec<WindowGraph>, String> {
 
         let has_boundary = graph.initializer.virtual_vertices.len() == 1;
 
-        // Include global boundary vertex if the window contains any one-detector edge
-        if has_boundary {
-            let needs_boundary = graph
+        // The global graph may have a physical boundary even when this window
+        // contains no boundary edge. Only allocate a local virtual in windows
+        // that actually need it (and never index a missing local mapping).
+        let needs_boundary = has_boundary
+            && graph
                 .edge_metadata
                 .iter()
                 .any(|em| em.detectors.len() == 1 && window_dets.contains(&em.detectors[0]));
-            if needs_boundary {
-                let local = positions.len();
-                det_to_local.insert(graph.num_detectors, local);
-                // Boundary position is last in graph.positions when has_boundary
-                let pos = graph.positions.last().cloned().unwrap_or(Position {
-                    i: 0.0,
-                    j: 0.0,
-                    t: 0.0,
-                });
-                positions.push(pos);
-                detector_map.push(None); // synthetic, no global detector
-            }
+        if needs_boundary {
+            let local = positions.len();
+            det_to_local.insert(graph.num_detectors, local);
+            // Boundary position is last in graph.positions when has_boundary
+            let pos = graph.positions.last().cloned().unwrap_or(Position {
+                i: 0.0,
+                j: 0.0,
+                t: 0.0,
+            });
+            positions.push(pos);
+            detector_map.push(None); // physical virtual, no global detector
         }
 
-        // Temporal virtuals for open windows (one per outer crossing that touches this window)
-        // For the prototype we create a single temporal virtual at t = window's temporal cut
-        // when layer==0 and temporal_boundary=="open".  The exact t is taken from the
-        // detector at the cut if available.
+        // The explicit-membership prototype shares one temporal virtual among
+        // crossing edges of an open window. Its position is visualization-only;
+        // it is not a physical code boundary or a global detector.
         let mut temporal_virtual_local: Option<usize> = None;
         if w.layer == 0 && w.temporal_boundary == "open" {
             let local = positions.len();
-            // t at the seam between commit and buffer — use middle of commit+buffer interval
+            // Use a commit detector for the synthetic vertex's display position.
             let t_cut = graph
                 .detector_coordinates
                 .get(*w.commit.first().unwrap_or(&0))
@@ -212,8 +212,7 @@ pub fn build_window_graphs(graph: &Graph) -> Result<Vec<WindowGraph>, String> {
             }
         }
 
-        let virtual_vertices = if has_boundary {
-            // global boundary is always present locally when needed
+        let virtual_vertices = if needs_boundary {
             vec![det_to_local[&graph.num_detectors]]
         } else {
             vec![]
@@ -307,5 +306,36 @@ mod tests {
         assert!(wgs[0].initializer.vertex_num >= 3);
         // B0 is closed, no temporal virtual
         assert_eq!(wgs[1].temporal_boundary, "closed");
+    }
+
+    #[test]
+    fn global_boundary_is_only_copied_to_windows_that_need_it() {
+        let dem: Dem = serde_json::from_value(serde_json::json!({
+            "schema_version": 1, "num_detectors": 3, "num_observables": 1,
+            "detector_coordinates": [[0,0,0],[0,0,1],[0,0,2]],
+            "errors": [
+                {"probability":0.1,"components":[{"detectors":[0,1],"observables":[0]}]},
+                {"probability":0.2,"components":[{"detectors":[1,2],"observables":[]}]},
+                {"probability":0.05,"components":[{"detectors":[2],"observables":[]}]}
+            ],
+            "window_annotations": {"schema_version":1,"annotation_only":true,"windows":[
+                {"id":"A0","layer":0,"commit":[0],"buffer":[1],
+                 "temporal_boundary":"open","commit_buffer_seams":[{"error":0,"component":0}],
+                 "outer_crossings":[{"error":1,"component":0}]},
+                {"id":"B0","layer":1,"commit":[1,2],"buffer":[],
+                 "temporal_boundary":"closed","commit_buffer_seams":[],
+                 "outer_crossings":[{"error":0,"component":0}]}
+            ]}
+        }))
+        .unwrap();
+        let graph = convert(dem, 100.0, false).unwrap();
+        assert_eq!(graph.initializer.virtual_vertices, vec![3]);
+        let windows = build_window_graphs(&graph).unwrap();
+        assert_eq!(windows[0].detector_map, vec![Some(0), Some(1), None]);
+        assert_eq!(windows[0].initializer.virtual_vertices, vec![2]); // temporal only
+        assert_eq!(windows[0].edge_map, vec![0, 1]);
+        assert_eq!(windows[1].detector_map, vec![Some(1), Some(2), None]);
+        assert_eq!(windows[1].initializer.virtual_vertices, vec![2]); // physical only
+        assert_eq!(windows[1].edge_map, vec![1, 2]);
     }
 }

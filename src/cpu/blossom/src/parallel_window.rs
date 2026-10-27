@@ -55,7 +55,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use fusion_blossom::mwpm_solver::PrimalDualSolver;
 use fusion_blossom::util::*;
 use fusion_blossom::visualize::VisualizePosition;
-use micro_blossom_nostd::window::{WindowLayer, WindowSpec};
+pub use micro_blossom_nostd::window::{WindowLayer, WindowSpec};
 use serde_json::json;
 
 use crate::mwpm_solver::*;
@@ -122,9 +122,10 @@ pub fn build_window_initializer(
             global_to_local[v] = Some(local);
             local_to_global.push(v);
             // Use global position for virtual if available, otherwise synthetic at window centre.
-            let pos = global_pos.get(v).cloned().unwrap_or_else(|| {
-                VisualizePosition::new(0.0, 0.0, (window.t_start + window.t_end) / 2.0)
-            });
+            let pos = global_pos
+                .get(v)
+                .cloned()
+                .unwrap_or_else(|| VisualizePosition::new(0.0, 0.0, (window.t_start + window.t_end) / 2.0));
             local_positions.push(pos);
         }
     }
@@ -134,20 +135,12 @@ pub fn build_window_initializer(
     if window.is_open() {
         // Past boundary
         let past_local = local_positions.len();
-        local_positions.push(VisualizePosition::new(
-            0.0,
-            0.0,
-            window.t_start,
-        ));
+        local_positions.push(VisualizePosition::new(0.0, 0.0, window.t_start));
         local_to_global.push(usize::MAX); // sentinel: no global counterpart
         temporal_virtuals.push(past_local);
         // Future boundary
         let future_local = local_positions.len();
-        local_positions.push(VisualizePosition::new(
-            0.0,
-            0.0,
-            window.t_end,
-        ));
+        local_positions.push(VisualizePosition::new(0.0, 0.0, window.t_end));
         local_to_global.push(usize::MAX);
         temporal_virtuals.push(future_local);
     }
@@ -247,6 +240,22 @@ impl WindowMaps {
     }
 }
 
+/// An already-cut window graph with explicit detector/edge maps from the
+/// toolchain. Unlike `WindowSpec`, membership is by detector ID, not an inferred
+/// time interval; the two representations must not be silently conflated.
+pub struct EncodedWindow {
+    pub id: String,
+    pub layer: WindowLayer,
+    pub initializer: SolverInitializer,
+    pub positions: Vec<VisualizePosition>,
+    /// `local vertex -> global detector`, or None for either virtual boundary.
+    pub detector_map: Vec<Option<usize>>,
+    /// `local edge -> global edge`, aligned with `initializer.weighted_edges`.
+    pub edge_map: Vec<usize>,
+    /// Global edges owned by the top commit; bottom windows commit every edge.
+    pub commit_edges: Vec<usize>,
+}
+
 /// Parallel-window decoder that wraps any micro-blossom inner solver.
 ///
 /// The generic `Inner` is a *window* solver factory: given a
@@ -265,6 +274,10 @@ pub struct ParallelWindowDecoder {
     /// extended to `Vec<usize>`.
     pub edge_observables: Vec<Option<usize>>,
     pub num_observables: usize,
+    // The explicit-membership path uses the actual graphs exported by the
+    // toolchain and preserves *all* logical labels per edge.
+    encoded_windows: Option<Vec<EncodedWindow>>,
+    encoded_observables: Vec<Vec<usize>>,
 }
 
 impl ParallelWindowDecoder {
@@ -288,7 +301,126 @@ impl ParallelWindowDecoder {
             windows,
             edge_observables,
             num_observables,
+            encoded_windows: None,
+            encoded_observables: Vec::new(),
         }
+    }
+
+    /// Construct a decoder from window graphs already cut by the toolchain.
+    /// The caller must provide unambiguous top-commit edge ownership; the
+    /// constructor validates all maps before any solver or output is used.
+    pub fn from_encoded(
+        global_graph: MicroBlossomSingle,
+        encoded_windows: Vec<EncodedWindow>,
+        edge_observables: Vec<Vec<usize>>,
+        num_observables: usize,
+    ) -> Result<Self, String> {
+        if edge_observables.len() != global_graph.weighted_edges.len() {
+            return Err("edge labels must align with global weighted edges".into());
+        }
+        for (eid, labels) in edge_observables.iter().enumerate() {
+            let mut seen = BTreeSet::new();
+            for &label in labels {
+                if label >= num_observables || !seen.insert(label) {
+                    return Err(format!("edge {eid} has an invalid or repeated observable label"));
+                }
+            }
+        }
+        if !encoded_windows.iter().any(|w| w.layer == WindowLayer::Top)
+            || !encoded_windows.iter().any(|w| w.layer == WindowLayer::Bottom)
+        {
+            return Err("decoding requires both open top and closed bottom windows".into());
+        }
+        let mut ids = BTreeSet::new();
+        let mut owned_top_edges = BTreeSet::new();
+        let global_virtuals: BTreeSet<_> = global_graph.virtual_vertices.iter().copied().collect();
+        for window in &encoded_windows {
+            if !ids.insert(&window.id) {
+                return Err(format!("duplicate window ID: {}", window.id));
+            }
+            let init = &window.initializer;
+            if init.vertex_num != window.positions.len()
+                || init.vertex_num != window.detector_map.len()
+                || init.weighted_edges.len() != window.edge_map.len()
+            {
+                return Err(format!("window {} has inconsistent graph/map lengths", window.id));
+            }
+            let virtuals: BTreeSet<_> = init.virtual_vertices.iter().copied().collect();
+            if virtuals.iter().any(|&v| v >= init.vertex_num) {
+                return Err(format!("window {} has an invalid virtual vertex", window.id));
+            }
+            let mut seen_detectors = BTreeSet::new();
+            for (local, global) in window.detector_map.iter().enumerate() {
+                match global {
+                    Some(g)
+                        if *g < global_graph.vertex_num
+                            && !global_virtuals.contains(g)
+                            && !virtuals.contains(&local)
+                            && seen_detectors.insert(*g) => {}
+                    None if virtuals.contains(&local) => {}
+                    _ => return Err(format!("window {} has an invalid detector map", window.id)),
+                }
+            }
+            let mut local_edges = BTreeMap::new(); // global edge -> temporal crossing?
+            for (local, &(l, r, weight)) in init.weighted_edges.iter().enumerate() {
+                let eid = window.edge_map[local];
+                if l >= init.vertex_num || r >= init.vertex_num || eid >= global_graph.weighted_edges.len() {
+                    return Err(format!("window {} has an invalid edge map", window.id));
+                }
+                let global = &global_graph.weighted_edges[eid];
+                if weight != global.w {
+                    return Err(format!("window {} has an invalid edge map", window.id));
+                }
+                let crossing = match (window.detector_map[l], window.detector_map[r]) {
+                    (Some(a), Some(b)) if (a == global.l && b == global.r) || (a == global.r && b == global.l) => false,
+                    (Some(a), None) | (None, Some(a)) => {
+                        let outside = if a == global.l {
+                            global.r
+                        } else if a == global.r {
+                            global.l
+                        } else {
+                            return Err(format!("window {} edge {eid} has mismatched endpoints", window.id));
+                        };
+                        let temporal = !global_virtuals.contains(&outside);
+                        if temporal && window.layer != WindowLayer::Top {
+                            return Err(format!("closed window {} has a temporal edge {eid}", window.id));
+                        }
+                        temporal
+                    }
+                    _ => return Err(format!("window {} edge {eid} has mismatched endpoints", window.id)),
+                };
+                if local_edges.insert(eid, crossing).is_some() {
+                    return Err(format!("window {} maps global edge {eid} twice", window.id));
+                }
+            }
+            if window.layer == WindowLayer::Top {
+                let mut local_commits = BTreeSet::new();
+                for &eid in &window.commit_edges {
+                    if !local_edges.contains_key(&eid) || !local_commits.insert(eid) || !owned_top_edges.insert(eid) {
+                        return Err(format!("window {} has overlapping or unmapped top commits", window.id));
+                    }
+                    if local_edges[&eid] {
+                        return Err(format!("window {} cannot commit temporal edge {eid}", window.id));
+                    }
+                }
+            } else if !window.commit_edges.is_empty() {
+                return Err(format!("bottom window {} must commit its whole graph", window.id));
+            }
+        }
+        // Keep the existing public single-label view for old callers. Encoded
+        // decoding uses the full `Vec<Vec<usize>>` instead.
+        let single_labels = edge_observables
+            .iter()
+            .map(|labels| (labels.len() == 1).then(|| labels[0]))
+            .collect();
+        Ok(Self {
+            global_graph,
+            windows: Vec::new(),
+            edge_observables: single_labels,
+            num_observables,
+            encoded_windows: Some(encoded_windows),
+            encoded_observables: edge_observables,
+        })
     }
 
     /// Decode a syndrome and return the global prediction.
@@ -299,17 +431,18 @@ impl ParallelWindowDecoder {
     /// window), collects committed edges and artificial defects, then runs
     /// layer-1 windows.
     pub fn decode(&self, global_defects: Vec<usize>) -> ParallelDecodeResult {
+        if self.encoded_windows.is_some() {
+            return self
+                .decode_encoded_shot(&global_defects)
+                .expect("encoded shot failed; use decode_encoded_shot to handle the error");
+        }
         let mut global_committed: BTreeSet<usize> = BTreeSet::new();
         let mut logical_parity = vec![false; self.num_observables];
 
         // --- Layer 0 : open, commit+buffer ---------------------------------
         // Artificial defects generated at seams, keyed by detector id
         let mut artificial_by_detector: BTreeMap<usize, usize> = BTreeMap::new(); // detector -> count (xor via toggle)
-        let layer0_windows: Vec<&WindowSpec> = self
-            .windows
-            .iter()
-            .filter(|w| w.layer == WindowLayer::Top)
-            .collect();
+        let layer0_windows: Vec<&WindowSpec> = self.windows.iter().filter(|w| w.layer == WindowLayer::Top).collect();
 
         for window in layer0_windows {
             let (init, pos, maps) = build_window_initializer(&self.global_graph, window);
@@ -411,11 +544,7 @@ impl ParallelWindowDecoder {
 
         // --- Layer 1 : closed, fully committed -------------------------------
         // Layer-1 input = (global defects inside layer-1 window) XOR (artificial defects from neighbours)
-        let layer1_windows: Vec<&WindowSpec> = self
-            .windows
-            .iter()
-            .filter(|w| w.layer == WindowLayer::Bottom)
-            .collect();
+        let layer1_windows: Vec<&WindowSpec> = self.windows.iter().filter(|w| w.layer == WindowLayer::Bottom).collect();
 
         for window in layer1_windows {
             let (init, pos, maps) = build_window_initializer(&self.global_graph, window);
@@ -447,10 +576,7 @@ impl ParallelWindowDecoder {
                 continue;
             }
 
-            let local_defects: Vec<usize> = input_defects
-                .iter()
-                .filter_map(|&gv| maps.global_to_local[gv])
-                .collect();
+            let local_defects: Vec<usize> = input_defects.iter().filter_map(|&gv| maps.global_to_local[gv]).collect();
 
             let window_graph = MicroBlossomSingle::new(&init, &pos);
             let mut solver = SolverEmbeddedComb::new(
@@ -492,6 +618,61 @@ impl ParallelWindowDecoder {
         }
     }
 
+    /// Decode a real shot using the toolchain's detector-membership windows.
+    /// Top windows see the input syndrome; only their owned edges are committed.
+    /// Bottom windows see the *full* residual S XOR boundary(top commits), not
+    /// merely the outside endpoints, and commit every selected local edge.
+    /// An uncorrectable shot is an error, never a successful prediction.
+    pub fn decode_encoded_shot(&self, defects: &[usize]) -> Result<ParallelDecodeResult, String> {
+        let windows = self
+            .encoded_windows
+            .as_ref()
+            .ok_or("decoder was not constructed from encoded windows")?;
+        let global_virtuals: BTreeSet<_> = self.global_graph.virtual_vertices.iter().copied().collect();
+        let mut residual = BTreeSet::new();
+        for &detector in defects {
+            if detector >= self.global_graph.vertex_num || global_virtuals.contains(&detector) || !residual.insert(detector)
+            {
+                return Err(format!("invalid or duplicate global defect {detector}"));
+            }
+        }
+        let initial = residual.clone();
+        let mut committed = BTreeSet::new();
+        for window in windows.iter().filter(|w| w.layer == WindowLayer::Top) {
+            let tentative = solve_encoded_window(window, &initial)?;
+            let owned: BTreeSet<_> = window.commit_edges.iter().copied().collect();
+            for eid in tentative {
+                if owned.contains(&eid) {
+                    toggle_set(&mut committed, eid);
+                    toggle_global_edge(&mut residual, &self.global_graph, &global_virtuals, eid);
+                }
+            }
+        }
+        // All bottom windows consume the same top-layer residual. The final
+        // boundary check below catches gaps, overlap and unmatched defects.
+        let bottom_input = residual.clone();
+        for window in windows.iter().filter(|w| w.layer == WindowLayer::Bottom) {
+            for eid in solve_encoded_window(window, &bottom_input)? {
+                toggle_set(&mut committed, eid);
+                toggle_global_edge(&mut residual, &self.global_graph, &global_virtuals, eid);
+            }
+        }
+        if !residual.is_empty() {
+            return Err(format!("unmatched residual detectors: {residual:?}"));
+        }
+        let mut logical_parity = vec![false; self.num_observables];
+        for &eid in &committed {
+            for &observable in &self.encoded_observables[eid] {
+                logical_parity[observable] ^= true;
+            }
+        }
+        Ok(ParallelDecodeResult {
+            committed_edges: committed.into_iter().collect(),
+            logical_parity,
+            total_offloaded: 0,
+        })
+    }
+
     /// Convenience: build windows automatically from the global detector time
     /// range using the given commit/buffer sizes and scheme, then decode.
     pub fn decode_auto(
@@ -506,6 +687,85 @@ impl ParallelWindowDecoder {
         let _ = (commit_size, buffer_size, gap);
         self.decode(global_defects)
     }
+}
+
+fn toggle_global_edge(residual: &mut BTreeSet<usize>, global: &MicroBlossomSingle, virtuals: &BTreeSet<usize>, eid: usize) {
+    let edge = &global.weighted_edges[eid];
+    for detector in [edge.l, edge.r] {
+        if !virtuals.contains(&detector) {
+            toggle_set(residual, detector);
+        }
+    }
+}
+
+fn solve_encoded_window(window: &EncodedWindow, global_defects: &BTreeSet<usize>) -> Result<Vec<usize>, String> {
+    let local_defects: Vec<_> = window
+        .detector_map
+        .iter()
+        .enumerate()
+        .filter_map(|(local, global)| global.filter(|id| global_defects.contains(id)).map(|_| local))
+        .collect();
+    if local_defects.is_empty() {
+        return Ok(Vec::new());
+    }
+    let init = &window.initializer;
+    let virtuals: BTreeSet<_> = init.virtual_vertices.iter().copied().collect();
+    let mut adjacency = vec![Vec::new(); init.vertex_num];
+    for &(l, r, _) in &init.weighted_edges {
+        adjacency[l].push(r);
+        adjacency[r].push(l);
+    }
+    // A disconnected component with odd parity and no virtual boundary cannot
+    // be matched. Reject before calling the inner solver instead of panicking.
+    let mut defect_flags = vec![false; init.vertex_num];
+    for &local in &local_defects {
+        defect_flags[local] = true;
+    }
+    let mut seen = vec![false; init.vertex_num];
+    for start in 0..init.vertex_num {
+        if seen[start] {
+            continue;
+        }
+        let mut stack = vec![start];
+        seen[start] = true;
+        let mut odd = false;
+        let mut boundary = false;
+        while let Some(v) = stack.pop() {
+            odd ^= defect_flags[v];
+            boundary |= virtuals.contains(&v);
+            for &next in &adjacency[v] {
+                if !seen[next] {
+                    seen[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
+        if odd && !boundary {
+            return Err(format!("window {} has an unmatchable syndrome component", window.id));
+        }
+    }
+    let window_graph = MicroBlossomSingle::new(init, &window.positions);
+    let mut solver = SolverEmbeddedComb::new(
+        window_graph,
+        json!({
+            "dual": { "sim_config": {
+                "support_offloading": false,
+                "support_layer_fusion": false
+            }}
+        }),
+    );
+    solver.solve_visualizer(&SyndromePattern::new_vertices(local_defects), None);
+    solver
+        .subgraph_visualizer(None)
+        .into_iter()
+        .map(|local| {
+            window
+                .edge_map
+                .get(local)
+                .copied()
+                .ok_or_else(|| format!("window {} returned an out-of-range correction edge {local}", window.id))
+        })
+        .collect()
 }
 
 fn toggle_set(set: &mut BTreeSet<usize>, v: usize) {

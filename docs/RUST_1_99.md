@@ -52,16 +52,20 @@ semantics or accelerates the FPGA datapath.
    status; detector bounds, IDs, disjoint local regions, layer/boundary agreement,
    and same-layer commit exclusivity. Recompute seam/crossing references from the
    DEM so direct Rust imports cannot bypass Python's checks or provide stale
-   references. Python uses the same membership policy. Coverage and actual graph
-   slicing are still outside this annotation contract.
+   references. Python uses the same membership policy. Annotations alone do not
+   imply executable coverage: the CPU decoding adapter additionally checks
+   complete time slices and exclusive commit ownership when shots are supplied,
+   and consumes the cut window graphs rather than treating annotation as decoding.
 4. **Lossless coordinate sidecar.** Preserve complete detector coordinates and
    detector/observable counts in graph output. Visualization positions remain
    distinct from logical/surgery semantics.
 5. **Global correction parity.** Add a Rust API and `check-correction` CLI. Detector
    and observable supports compose by XOR; repeated correction edges cancel,
    input defects must be unique, and out-of-range IDs fail. Return the global
-   residual syndrome; CLI exits nonzero if it remains. This is not the layer-0
-   commit/seam residual algorithm and does not prove a correction is optimal.
+   residual syndrome; CLI exits nonzero if it remains. The standalone
+   `check-correction` command does not choose a correction; the separate
+   `compile`/`export --shots` path runs the two-layer CPU decoder, then uses
+   this global algebra to verify its committed edges and observable parity.
 6. **Hardware handoff checks.** In addition to index/weight/boundary identity,
    validate visualization positions, binary-tree node counts and leaf/root roles,
    ordered acyclic parent/child links, growth-vector size/nonnegative entries,
@@ -74,21 +78,19 @@ semantics or accelerates the FPGA datapath.
 
 ## Verification and limitation
 
-Installing 1.99.0 with rustup was attempted, but this sandbox blocks
-`static.rust-lang.org`. The npm mirror used earlier does not have 1.99 packages.
-**A real Rust 1.99 compile, formatter, Clippy and CI run are therefore pending.**
-No downgrade was made to the project's pin or MSRV to hide that limitation.
+Rustup downloads from `static.rust-lang.org` are unavailable in this sandbox;
+Rust 1.99 binaries and standard libraries from npm packages were sufficient for
+local formatting and compiler metadata checks, but full local Cargo builds lack
+cached registry packages. The GitHub Actions run
+[40394312450](https://github.com/chengcxi/microblossom-parallelism/actions/runs/40394312450)
+passed with Rust **1.99.0**: the root job ran Cargo formatting, tests, docs,
+Clippy, Python/Stim integration and installed-binary smoke tests; the CPU job
+built the nested Micro Blossom executable and tested parallel windows. The
+current change set adds further mismatch/ownership checks and reruns the same
+jobs in CI. No MSRV bypass or toolchain downgrade is used there.
 
-Compatibility checks with the already-installed 1.88 compiler, using Cargo's
-`--ignore-rust-version` only in the sandbox, passed:
-
-- 12 Rust unit tests.
-- 27 Python/integration tests; one optional full Micro Blossom parser test skipped.
-- Formatting and Clippy under the available older toolchain.
-- Native Fusion Blossom reader/decoder tests included in that integration suite.
-
-The sandbox-only Cargo wrapper inserted the MSRV override for subprocess build/run
-commands during Python tests. It is not part of the repository, normal usage, or
-CI. These checks establish useful behavioral regression coverage, **not** Rust
-1.99 certification. Both checked-in CI jobs use 1.99 with no MSRV bypass. The full
-upstream parser/hardware path still requires the optional upstream job.
+Earlier compatibility checks under Rust 1.88 with a sandbox-only
+`--ignore-rust-version` wrapper also passed, but were not themselves Rust 1.99
+certification. The optional upstream parser/hardware job remains unverified;
+structural parser checks and real CPU decoding do **not** prove a window-aware
+FPGA implementation.

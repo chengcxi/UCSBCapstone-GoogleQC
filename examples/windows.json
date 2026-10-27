@@ -1,6 +1,6 @@
 {
   "windows": [
     {"id": "top-0", "layer": 0, "commit": [0], "buffer": [1]},
-    {"id": "bottom-0", "layer": 1, "commit": [1], "buffer": []}
+    {"id": "bottom-0", "layer": 1, "commit": [1, 2], "buffer": []}
   ]
 }

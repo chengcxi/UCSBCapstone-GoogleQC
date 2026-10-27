@@ -99,6 +99,25 @@ class StimExportTests(unittest.TestCase):
             self.assertTrue(json.loads(output.read_text())['window_annotations']['annotation_only'])
             self.assertEqual(stim.DetectorErrorModel.from_file(dem).num_detectors, 3)
 
+    def test_seeded_shots_are_real_stim_samples(self):
+        for path, kind, plan in [
+            (ROOT / 'examples/tiny.stim', 'circuit', ROOT / 'examples/tiny-windows.json'),
+            (ROOT / 'examples/seam.dem', 'dem', ROOT / 'examples/windows.json'),
+        ]:
+            command = [sys.executable, str(ROOT / 'tools/stim_export.py'), str(path),
+                       '--kind', kind, '--windows', str(plan), '--output', '-',
+                       '--sample-shots', '8', '--seed', '3']
+            one = subprocess.check_output(command, text=True)
+            self.assertEqual(one, subprocess.check_output(command, text=True))
+            data = json.loads(one)
+            self.assertEqual(data['ir']['num_detectors'], 2 if kind == 'circuit' else 3)
+            self.assertEqual(len(data['shots']['shots']), 8)
+            for shot in data['shots']['shots']:
+                self.assertTrue(all(d < data['ir']['num_detectors'] for d in shot['defects']))
+        bad = subprocess.run(command[:-2] + ['--seed', '-1'], capture_output=True, text=True)
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn('nonnegative', bad.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

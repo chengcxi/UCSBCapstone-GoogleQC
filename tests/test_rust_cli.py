@@ -59,6 +59,92 @@ class RustCliTests(unittest.TestCase):
         self.assertEqual(graph['weight_scale'], 10)
         self.assertTrue(graph['window_annotations']['annotation_only'])
         self.assertEqual(graph['initializer']['weighted_edges'][0], [0, 1, 22])
+        cut = json.loads(Path(str(self.prefix) + '.windows.json').read_text())
+        self.assertEqual(cut['schema_version'], 1)
+        top, bottom = cut['windows']
+        self.assertEqual(top['window_id'], 'top-0')
+        self.assertEqual(top['detector_map'][:2], [0, 1])
+        self.assertEqual(top['initializer']['virtual_vertices'], [2])  # temporal only
+        self.assertEqual(bottom['detector_map'][:2], [1, 2])
+        self.assertEqual(bottom['edge_map'], [1, 2])
+        self.assertFalse(Path(str(self.prefix) + '.corrections.json').exists())
+
+    def test_windowed_shots_decode_and_export_without_python(self):
+        self.assert_ok(self.compile(ROOT / 'examples/seam.dem', '--kind', 'dem',
+                                    '--windows', ROOT / 'examples/windows.json',
+                                    '--shots', ROOT / 'examples/seam-shots.json'))
+        first = json.loads(Path(str(self.prefix) + '.corrections.json').read_text())
+        self.assertEqual(first['schema_version'], 1)
+        self.assertEqual([s['committed_edges'] for s in first['shots']],
+                         [[0, 1], [0], [1], [2], []])
+        self.assertTrue(all(not s['residual_syndrome'] and not s['logical_error']
+                            for s in first['shots']))
+        self.assertEqual([s['predicted_observables'] for s in first['shots']],
+                         [[0], [0], [], [], []])
+        out = self.path / 'from-ir'
+        self.assert_ok(self.run_cli('export', str(self.prefix) + '.ir.json', '--output', out,
+                                    '--shots', ROOT / 'examples/seam-shots.json'))
+        self.assertEqual(first, json.loads(Path(str(out) + '.corrections.json').read_text()))
+        self.assertEqual(json.loads(Path(str(self.prefix) + '.windows.json').read_text()),
+                         json.loads(Path(str(out) + '.windows.json').read_text()))
+
+    def test_sampling_stim_circuit_and_dem_end_to_end(self):
+        for source, plan, extra in [
+            (ROOT / 'examples/tiny.stim', ROOT / 'examples/tiny-windows.json', ()),
+            (ROOT / 'examples/seam.dem', ROOT / 'examples/windows.json', ('--kind', 'dem')),
+        ]:
+            with self.subTest(source=source):
+                self.assert_ok(self.compile(source, *extra, '--windows', plan,
+                                            '--sample-shots', '24', '--seed', '7'))
+                corrected = json.loads(Path(str(self.prefix) + '.corrections.json').read_text())
+                self.assertEqual(len(corrected['shots']), 24)
+                self.assertTrue(all(not s['logical_error'] and not s['residual_syndrome']
+                                    for s in corrected['shots']))
+                if source.suffix == '.stim':
+                    dets, obs = stim.Circuit.from_file(source).compile_detector_sampler(seed=7).sample(
+                        24, separate_observables=True)
+                else:
+                    dets, obs, _ = stim.DetectorErrorModel.from_file(source).compile_sampler(seed=7).sample(24)
+                for shot, det, actual in zip(corrected['shots'], dets, obs):
+                    self.assertEqual(shot['defects'], [i for i, bit in enumerate(det) if bit])
+                    self.assertEqual(shot['actual_observables'], [i for i, bit in enumerate(actual) if bit])
+
+    def test_multi_observable_edges_and_bad_shots(self):
+        dem = self.path / 'two-label.dem'
+        dem.write_text('detector(0, 0, 0) D0\ndetector(0, 0, 1) D1\n'
+                       'detector(0, 0, 2) D2\nerror(0.1) D0 D1 L0 L1\n'
+                       'error(0.2) D1 D2\nerror(0.05) D2\n')
+        shots = self.path / 'shots.json'
+        shots.write_text(json.dumps({'shots': [{'defects': [0, 1], 'observables': [1, 0]}]}))
+        self.assert_ok(self.compile(dem, '--kind', 'dem', '--windows', ROOT / 'examples/windows.json',
+                                    '--shots', shots))
+        corrected = json.loads(Path(str(self.prefix) + '.corrections.json').read_text())
+        self.assertEqual(corrected['shots'][0]['predicted_observables'], [0, 1])
+        self.assertEqual(corrected['shots'][0]['actual_observables'], [0, 1])
+        before = {p.name: p.read_bytes() for p in self.prefix.parent.iterdir()}
+        for invalid in [[0, 0], [3], [1, 1]]:
+            shots.write_text(json.dumps({'shots': [{'defects': invalid}]}))
+            result = self.compile(dem, '--kind', 'dem', '--windows', ROOT / 'examples/windows.json',
+                                  '--shots', shots)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('shot 0:', result.stderr)
+            self.assertEqual(before, {p.name: p.read_bytes() for p in self.prefix.parent.iterdir()})
+        plan = self.path / 'unowned.json'
+        plan.write_text(json.dumps({'windows': [
+            {'id': 'top-0', 'layer': 0, 'commit': [0], 'buffer': [1]},
+            {'id': 'bottom-0', 'layer': 1, 'commit': [1], 'buffer': []}]}))
+        result = self.compile(dem, '--kind', 'dem', '--windows', plan, '--shots', shots)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('detector 2 is not owned', result.stderr)
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.prefix.parent.iterdir()})
+        shots.write_text(json.dumps({'shots': [{'defects': [0, 1]}]}))
+        plan.write_text(json.dumps({'windows': [
+            {'id': 'top-0', 'layer': 0, 'commit': [0], 'buffer': [1]},
+            {'id': 'bottom-0', 'layer': 1, 'commit': [0, 1, 2], 'buffer': []}]}))
+        result = self.compile(dem, '--kind', 'dem', '--windows', plan, '--shots', shots)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('detector 0 has overlapping commits', result.stderr)
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.prefix.parent.iterdir()})
 
     def test_invalid_circuit_keeps_previous_outputs(self):
         self.assert_ok(self.compile())
@@ -94,6 +180,14 @@ class RustCliTests(unittest.TestCase):
                 self.assertFalse(self.prefix.parent.exists())
         result = self.run_cli('export', 'unused', '--output', self.prefix, '--windows', 'unused')
         self.assertIn('only valid for compile', result.stderr)
+        for flags in [('--sample-shots', '0'), ('--sample-shots', '3'),
+                      ('--seed', '3'), ('--shots', 'other', '--sample-shots', '3')]:
+            result = self.compile(None, *flags)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(self.prefix.parent.exists())
+        result = self.compile(None, '--shots', ROOT / 'examples/seam-shots.json')
+        self.assertIn('--shots requires annotated windows', result.stderr)
+        self.assertFalse(self.prefix.parent.exists())
 
     def test_correlation_requires_explicit_opt_in(self):
         dem = self.path / 'correlated.dem'
