@@ -1,3 +1,4 @@
+use microblossom_toolchain::benchmark::compare_cpu_decoders;
 use microblossom_toolchain::decoding::{CorrectionBatch, ShotBatch, decode_batch, prepare_decoder};
 use microblossom_toolchain::window::{WindowGraph, build_window_graphs};
 use microblossom_toolchain::{Dem, Graph, convert};
@@ -9,6 +10,8 @@ Usage:
   microblossom-toolchain compile INPUT --output PREFIX [OPTIONS]
   microblossom-toolchain export INPUT.ir.json --output PREFIX [OPTIONS]
   microblossom-toolchain check-correction INPUT.ir.json SHOT.json [--allow-correlated]
+  microblossom-toolchain benchmark INPUT.ir.json --shots SHOTS.json --output REPORT.json
+      [--warmup PASSES] [--repeats PASSES] [--weight-scale NUMBER] [--allow-correlated]
   microblossom-toolchain INPUT.ir.json PREFIX [--allow-correlated]  (legacy)
 
 Options:
@@ -25,7 +28,10 @@ Options:
 Writes PREFIX.ir.json, PREFIX.graph.json, PREFIX.syndromes.
 With annotated windows writes PREFIX.windows.json; with shot input also
 writes PREFIX.corrections.json. With --micro-blossom writes PREFIX.hardware.json.
-Requires Python + Stim only for compile; export and supplied shots are Rust-only.";
+Benchmark compares the global Micro Blossom CPU solver with the sequential
+CPU window decoder on identical shots. Timings do not include Stim or FPGA.
+Benchmark defaults: 2 warmup passes, 20 measured passes; --shots is required.
+Requires Python + Stim only for compile; export, benchmark and supplied shots are Rust-only.";
 
 struct Options {
     compile: bool,
@@ -329,6 +335,102 @@ fn check_correction(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn run_benchmark(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.is_empty() || args[0].starts_with('-') {
+        return Err("usage: benchmark INPUT.ir.json --shots SHOTS.json --output REPORT.json [--warmup N] [--repeats N]".into());
+    }
+    let input = PathBuf::from(&args[0]);
+    let mut shots: Option<PathBuf> = None;
+    let mut output: Option<PathBuf> = None;
+    let mut warmup = 2;
+    let mut repeats = 20;
+    let mut scale = 100.0;
+    let mut correlated = false;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut i = 1;
+    while i < args.len() {
+        let flag = args[i].as_str();
+        if !seen.insert(flag) {
+            return Err(format!("duplicate benchmark option: {flag}").into());
+        }
+        if flag == "--allow-correlated" {
+            correlated = true;
+            i += 1;
+            continue;
+        }
+        if !matches!(
+            flag,
+            "--shots" | "--output" | "--warmup" | "--repeats" | "--weight-scale"
+        ) {
+            return Err(format!("unknown benchmark option: {flag}").into());
+        }
+        let value = args
+            .get(i + 1)
+            .filter(|value| !value.is_empty() && !value.starts_with("--"))
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--shots" => shots = Some(value.into()),
+            "--output" => output = Some(value.into()),
+            "--warmup" => {
+                warmup = value
+                    .parse::<usize>()
+                    .map_err(|_| "invalid --warmup passes")?
+            }
+            "--repeats" => {
+                repeats = value
+                    .parse::<usize>()
+                    .map_err(|_| "invalid --repeats passes")?
+            }
+            "--weight-scale" => scale = value.parse::<f64>().map_err(|_| "invalid weight scale")?,
+            _ => unreachable!(),
+        }
+        i += 2;
+    }
+    let shots = shots.ok_or("benchmark requires --shots")?;
+    let output = output.ok_or("benchmark requires --output")?;
+    if output.file_name().is_none() {
+        return Err("--output requires a report filename".into());
+    }
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err("weight scale must be positive and finite".into());
+    }
+    let dem: Dem = serde_json::from_str(&fs::read_to_string(input)?)?;
+    let graph = convert(dem, scale, correlated)?;
+    let cut = build_window_graphs(&graph)?;
+    let decoder = prepare_decoder(&graph, &cut)?;
+    let batch: ShotBatch = serde_json::from_str(&fs::read_to_string(shots)?)?;
+    let report = compare_cpu_decoders(&graph, &decoder, &batch, warmup, repeats)?;
+    // Never publish a partial report, nor replace an earlier report if an
+    // input, decoder or parity check fails.
+    let parent = output
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    fs::create_dir_all(parent)?;
+    let mut sequence = 0;
+    let staging = loop {
+        let path = parent.join(format!(
+            ".microblossom-benchmark-{}-{sequence}",
+            process::id()
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => break Staging(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => sequence += 1,
+            Err(e) => return Err(e.into()),
+        }
+    };
+    fs::write(
+        staging.0.join("report.json"),
+        serde_json::to_string_pretty(&report)? + "\n",
+    )?;
+    if output.is_dir() {
+        return Err(format!("output path is a directory: {}", output.display()).into());
+    }
+    fs::rename(staging.0.join("report.json"), &output)?;
+    println!("{}", output.display());
+    Ok(())
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = env::args_os()
         .skip(1)
@@ -347,6 +449,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     if args.first().is_some_and(|s| s == "check-correction") {
         return check_correction(&args[1..]);
+    }
+    if args.first().is_some_and(|s| s == "benchmark") {
+        return run_benchmark(&args[1..]);
     }
     let options = parse(args)?;
     let (ir, sampled_shots) = extract_ir(&options)?;

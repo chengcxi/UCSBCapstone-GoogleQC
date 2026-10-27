@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "windows": [
+    {
+      "window_id": "top-0",
+      "layer": 0,
+      "temporal_boundary": "open",
+      "initializer": {
+        "vertex_num": 3,
+        "weighted_edges": [
+          [
+            0,
+            1,
+            220
+          ],
+          [
+            1,
+            2,
+            138
+          ]
+        ],
+        "virtual_vertices": [
+          2
+        ]
+      },
+      "positions": [
+        {
+          "i": 0.0,
+          "j": 0.0,
+          "t": 0.0
+        },
+        {
+          "i": 0.0,
+          "j": 0.0,
+          "t": 1.0
+        },
+        {
+          "i": 0.0,
+          "j": 0.0,
+          "t": 0.0
+        }
+      ],
+      "edge_metadata": [
+        {
+          "detectors": [
+            0,
+            1
+          ],
+          "observables": [
+            0
+          ],
+          "probability": 0.1,
+          "sources": [
+            [
+              0,
+              0
+            ]
+          ]
+        },
+        {
+          "detectors": [
+            1,
+            2
+          ],
+          "observables": [],
+          "probability": 0.2,
+          "sources": [
+            [
+              1,
+              0
+            ]
+          ]
+        }
+      ],
+      "detector_map": [
+        0,
+        1,
+        null
+      ],
+      "edge_map": [
+        0,
+        1
+      ]
+    },
+    {
+      "window_id": "bottom-0",
+      "layer": 1,
+      "temporal_boundary": "closed",
+      "initializer": {
+        "vertex_num": 3,
+        "weighted_edges": [
+          [
+            0,
+            1,
+            138
+          ],
+          [
+            1,
+            2,
+            294
+          ]
+        ],
+        "virtual_vertices": [
+          2
+        ]
+      },
+      "positions": [
+        {
+          "i": 0.0,
+          "j": 0.0,
+          "t": 1.0
+        },
+        {
+          "i": 0.0,
+          "j": 0.0,
+          "t": 2.0
+        },
+        {
+          "i": 0.0,
+          "j": 0.0,
+          "t": 0.0
+        }
+      ],
+      "edge_metadata": [
+        {
+          "detectors": [
+            1,
+            2
+          ],
+          "observables": [],
+          "probability": 0.2,
+          "sources": [
+            [
+              1,
+              0
+            ]
+          ]
+        },
+        {
+          "detectors": [
+            2
+          ],
+          "observables": [],
+          "probability": 0.05,
+          "sources": [
+            [
+              2,
+              0
+            ]
+          ]
+        }
+      ],
+      "detector_map": [
+        1,
+        2,
+        null
+      ],
+      "edge_map": [
+        1,
+        2
+      ]
+    }
+  ]
+}

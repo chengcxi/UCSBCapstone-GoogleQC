@@ -52,7 +52,7 @@ pub struct CorrectionShot {
     pub logical_error: Option<bool>,
 }
 
-fn initializer(input: &Initializer) -> Result<SolverInitializer, String> {
+pub(crate) fn initializer(input: &Initializer) -> Result<SolverInitializer, String> {
     let edges = input
         .weighted_edges
         .iter()
@@ -69,7 +69,7 @@ fn initializer(input: &Initializer) -> Result<SolverInitializer, String> {
     ))
 }
 
-fn positions(input: &[Position]) -> Vec<VisualizePosition> {
+pub(crate) fn positions(input: &[Position]) -> Vec<VisualizePosition> {
     input
         .iter()
         .map(|pos| VisualizePosition::new(pos.i, pos.j, pos.t))

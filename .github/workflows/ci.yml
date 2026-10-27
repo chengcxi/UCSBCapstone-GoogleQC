@@ -30,7 +30,13 @@ jobs:
           components: rustfmt, clippy
       - run: rustc --version --verbose && cargo --version
       - run: python -m pip install -r requirements-dev.txt
-      - run: cargo fmt --check
+      - name: Rust formatting
+        shell: bash
+        run: |
+          cargo fmt --check || {
+            python .github/scripts/annotate_fmt_failure.py
+            exit 1
+          }
       - name: Rust tests
         shell: bash
         run: |
@@ -55,7 +61,27 @@ jobs:
       - run: python -m unittest discover -s tests -v
         env:
           RUN_RUST_TESTS: '1'
+      - name: Verify captured visual demo against a fresh Rust CLI run
+        run: |
+          bash demo/scripts/capture.sh artifacts/demo-captures
+          for name in tiny seam; do
+            for suffix in ir.json graph.json windows.json corrections.json syndromes; do
+              cmp "artifacts/demo-captures/$name.$suffix" "demo/public/fixtures/$name.$suffix"
+            done
+          done
       - run: cargo install --locked --path . --root artifacts/install
+      - name: Measure CPU global vs sequential window (release, seam example)
+        run: |
+          mkdir -p artifacts/benchmark
+          artifacts/install/bin/microblossom-toolchain benchmark demo/public/fixtures/seam.ir.json \
+            --shots examples/seam-shots.json --warmup 2 --repeats 20 \
+            --output artifacts/benchmark/seam-ci.json
+          python .github/scripts/annotate_benchmark_capture.py artifacts/benchmark/seam-ci.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpu-benchmark-seam
+          path: artifacts/benchmark/seam-ci.json
+          if-no-files-found: error
       - name: Smoke-test installed binary outside checkout
         run: |
           cd "$RUNNER_TEMP"
@@ -78,6 +104,30 @@ jobs:
           cargo metadata --locked --no-deps --format-version 1 --manifest-path src/cpu/embedded/Cargo.toml > /dev/null
       - name: Test parallel-window decoder
         run: cargo test --release --locked --manifest-path src/cpu/blossom/Cargo.toml --lib parallel_window -- --nocapture
+
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: demo/package-lock.json
+      - run: npm ci
+        working-directory: demo
+      - run: npm test
+        working-directory: demo
+      - name: Build visual demo with check annotations on failure
+        working-directory: demo
+        shell: bash
+        run: |
+          node --version && npm --version
+          set -o pipefail
+          npm run build 2>&1 | tee /tmp/microblossom-demo-build.log || {
+            python -c 'from pathlib import Path; s=Path("/tmp/microblossom-demo-build.log").read_text(errors="replace")[-3500:]; print("::error title=Visual demo build::" + s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"))'
+            exit 1
+          }
 
   upstream:
     if: github.event_name == 'workflow_dispatch' && inputs.upstream

@@ -88,6 +88,48 @@ class RustCliTests(unittest.TestCase):
         self.assertEqual(json.loads(Path(str(self.prefix) + '.windows.json').read_text()),
                          json.loads(Path(str(out) + '.windows.json').read_text()))
 
+    def test_cpu_benchmark_uses_same_real_shots_and_keeps_fpga_unmeasured(self):
+        ir = ROOT / 'demo/public/fixtures/seam.ir.json'
+        shots = ROOT / 'examples/seam-shots.json'
+        output = self.path / 'comparison.json'
+        self.assert_ok(self.run_cli('benchmark', ir, '--shots', shots, '--output', output,
+                                    '--warmup', '1', '--repeats', '2'))
+        report = json.loads(output.read_text())
+        self.assertEqual(report['kind'], 'cpu_decoder_comparison')
+        self.assertEqual(report['settings']['shot_count'], 5)
+        self.assertEqual(report['settings']['nonempty_shot_count'], 4)
+        self.assertEqual(report['settings']['samples_per_method'], 10)
+        self.assertEqual(report['baseline']['id'], 'micro_blossom_global_cpu')
+        self.assertEqual(report['windowed']['id'], 'two_layer_window_cpu')
+        self.assertEqual(len(report['baseline']['samples_ns']), 10)
+        self.assertEqual(len(report['windowed']['samples_ns']), 10)
+        for method in (report['baseline'], report['windowed']):
+            self.assertEqual(method['logical_accuracy']['all_shots'],
+                             {'correct': 5, 'total': 5, 'fraction': 1.0})
+            self.assertEqual(method['logical_accuracy']['nonempty_shots'],
+                             {'correct': 4, 'total': 4, 'fraction': 1.0})
+        self.assertTrue(all(row['actual_observables'] is not None for row in report['shots']))
+        self.assertEqual(report['shots'][0]['defects'], [0, 2])
+        self.assertEqual(report['shots'][0]['window_edges'], [0, 1])
+        self.assertIn('not measured', report['fpga'])
+        self.assertNotIn('speedup', report)
+        before = output.read_bytes()
+        invalid = self.run_cli('benchmark', ir, '--shots', shots, '--output', output,
+                               '--warmup', '21', '--repeats', '1')
+        self.assertNotEqual(invalid.returncode, 0)
+        self.assertEqual(output.read_bytes(), before)
+        unlabeled = self.path / 'unlabeled.json'
+        unlabeled.write_text(json.dumps({'shots': [{'defects': []}]}))
+        no_truth_output = self.path / 'no-truth.json'
+        self.assert_ok(self.run_cli('benchmark', ir, '--shots', unlabeled,
+                                    '--output', no_truth_output, '--warmup', '0', '--repeats', '1'))
+        no_truth = json.loads(no_truth_output.read_text())
+        for method in (no_truth['baseline'], no_truth['windowed']):
+            self.assertEqual(method['logical_accuracy']['all_shots'],
+                             {'correct': 0, 'total': 0, 'fraction': None})
+            self.assertEqual(method['logical_accuracy']['nonempty_shots'],
+                             {'correct': 0, 'total': 0, 'fraction': None})
+
     def test_sampling_stim_circuit_and_dem_end_to_end(self):
         for source, plan, extra in [
             (ROOT / 'examples/tiny.stim', ROOT / 'examples/tiny-windows.json', ()),

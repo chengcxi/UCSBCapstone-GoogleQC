@@ -1,0 +1,392 @@
+{
+  "schema_version": 1,
+  "kind": "cpu_decoder_comparison",
+  "provenance": {
+    "stim_version": "1.15.0",
+    "input_kind": "dem",
+    "input_sha256": "071972344174af59774c80861e56631bf997abb1ad152528863ed46c92a74c09"
+  },
+  "graph": {
+    "detectors": 3,
+    "edges": 3,
+    "windows": 2
+  },
+  "host": {
+    "os": "linux",
+    "arch": "x86_64",
+    "logical_cpus": 2,
+    "profile": "release"
+  },
+  "settings": {
+    "warmup_passes": 2,
+    "measured_passes": 20,
+    "shot_count": 5,
+    "nonempty_shot_count": 4,
+    "samples_per_method": 100,
+    "timing_scope": "per-shot decoder calls; includes solver construction, solve, subgraph extraction, and window-local routing/stitching; excludes Stim, graph preparation, external parity verification and I/O",
+    "order": "alternated per shot and pass; no concurrent execution"
+  },
+  "baseline": {
+    "id": "micro_blossom_global_cpu",
+    "execution": "sequential_cpu",
+    "all_shots": {
+      "median_ns": 257622.5,
+      "p95_ns": 437329,
+      "mean_ns": 253207.6,
+      "min_ns": 40,
+      "max_ns": 1870223
+    },
+    "nonempty_shots": {
+      "median_ns": 263894.5,
+      "p95_ns": 454371,
+      "mean_ns": 316496.0875,
+      "min_ns": 245970,
+      "max_ns": 1870223
+    },
+    "samples_ns": [
+      1870223,
+      454371,
+      422682,
+      437329,
+      50,
+      331651,
+      270837,
+      320590,
+      311433,
+      60,
+      869348,
+      320951,
+      339275,
+      281086,
+      50,
+      326832,
+      298078,
+      283171,
+      289172,
+      60,
+      543649,
+      372838,
+      283921,
+      274674,
+      51,
+      291987,
+      279212,
+      263854,
+      279634,
+      51,
+      783898,
+      298279,
+      265557,
+      272491,
+      50,
+      258434,
+      258283,
+      259135,
+      251701,
+      50,
+      261601,
+      261009,
+      255428,
+      253034,
+      60,
+      255268,
+      253735,
+      265056,
+      362028,
+      60,
+      424194,
+      255849,
+      258454,
+      255959,
+      70,
+      257773,
+      245970,
+      248265,
+      246632,
+      50,
+      249938,
+      267992,
+      246922,
+      250259,
+      40,
+      257472,
+      248746,
+      251561,
+      282079,
+      60,
+      249828,
+      247764,
+      247473,
+      254517,
+      50,
+      253134,
+      264195,
+      249427,
+      279384,
+      60,
+      248034,
+      248155,
+      264416,
+      284373,
+      51,
+      247653,
+      263935,
+      263384,
+      249798,
+      50,
+      247543,
+      246812,
+      283291,
+      316373,
+      50,
+      247664,
+      262521,
+      264264,
+      255949,
+      50
+    ],
+    "shots_with_truth": 5,
+    "logical_errors": 0,
+    "logical_accuracy": {
+      "all_shots": {
+        "correct": 5,
+        "total": 5,
+        "fraction": 1.0
+      },
+      "nonempty_shots": {
+        "correct": 4,
+        "total": 4,
+        "fraction": 1.0
+      }
+    }
+  },
+  "windowed": {
+    "id": "two_layer_window_cpu",
+    "execution": "sequential_cpu",
+    "all_shots": {
+      "median_ns": 289256.0,
+      "p95_ns": 770352,
+      "mean_ns": 355821.89,
+      "min_ns": 431,
+      "max_ns": 1608753
+    },
+    "nonempty_shots": {
+      "median_ns": 488450.0,
+      "p95_ns": 852647,
+      "mean_ns": 444620.45,
+      "min_ns": 243176,
+      "max_ns": 1608753
+    },
+    "samples_ns": [
+      852647,
+      393076,
+      884547,
+      459150,
+      1002,
+      770352,
+      293370,
+      554649,
+      309259,
+      591,
+      653163,
+      319949,
+      618599,
+      320780,
+      801,
+      590356,
+      295864,
+      581649,
+      271479,
+      481,
+      1608753,
+      284643,
+      545192,
+      287508,
+      641,
+      568274,
+      283020,
+      587741,
+      257001,
+      541,
+      516467,
+      255058,
+      543979,
+      276007,
+      671,
+      533028,
+      253094,
+      518752,
+      294282,
+      612,
+      508241,
+      279513,
+      532027,
+      253845,
+      651,
+      513381,
+      617206,
+      996877,
+      279513,
+      471,
+      975698,
+      271108,
+      555039,
+      256020,
+      692,
+      511428,
+      246151,
+      504415,
+      263654,
+      511,
+      492102,
+      288039,
+      550371,
+      249628,
+      681,
+      509734,
+      267892,
+      492803,
+      255949,
+      471,
+      508562,
+      245260,
+      515205,
+      250719,
+      661,
+      516978,
+      290473,
+      492152,
+      247343,
+      441,
+      504935,
+      243176,
+      523060,
+      251691,
+      931,
+      502591,
+      259356,
+      522919,
+      246863,
+      461,
+      509544,
+      245801,
+      501439,
+      256440,
+      811,
+      497101,
+      247794,
+      484798,
+      253114,
+      431
+    ],
+    "shots_with_truth": 5,
+    "logical_errors": 0,
+    "logical_accuracy": {
+      "all_shots": {
+        "correct": 5,
+        "total": 5,
+        "fraction": 1.0
+      },
+      "nonempty_shots": {
+        "correct": 4,
+        "total": 4,
+        "fraction": 1.0
+      }
+    }
+  },
+  "prediction_disagreements": 0,
+  "shots": [
+    {
+      "index": 0,
+      "defects": [
+        0,
+        2
+      ],
+      "actual_observables": [
+        0
+      ],
+      "baseline_edges": [
+        0,
+        1
+      ],
+      "window_edges": [
+        0,
+        1
+      ],
+      "baseline_observables": [
+        0
+      ],
+      "window_observables": [
+        0
+      ],
+      "same_prediction": true
+    },
+    {
+      "index": 1,
+      "defects": [
+        0,
+        1
+      ],
+      "actual_observables": [
+        0
+      ],
+      "baseline_edges": [
+        0
+      ],
+      "window_edges": [
+        0
+      ],
+      "baseline_observables": [
+        0
+      ],
+      "window_observables": [
+        0
+      ],
+      "same_prediction": true
+    },
+    {
+      "index": 2,
+      "defects": [
+        1,
+        2
+      ],
+      "actual_observables": [],
+      "baseline_edges": [
+        1
+      ],
+      "window_edges": [
+        1
+      ],
+      "baseline_observables": [],
+      "window_observables": [],
+      "same_prediction": true
+    },
+    {
+      "index": 3,
+      "defects": [
+        2
+      ],
+      "actual_observables": [],
+      "baseline_edges": [
+        2
+      ],
+      "window_edges": [
+        2
+      ],
+      "baseline_observables": [],
+      "window_observables": [],
+      "same_prediction": true
+    },
+    {
+      "index": 4,
+      "defects": [],
+      "actual_observables": [],
+      "baseline_edges": [],
+      "window_edges": [],
+      "baseline_observables": [],
+      "window_observables": [],
+      "same_prediction": true
+    }
+  ],
+  "fpga": "not measured; no parallel FPGA window scheduler is implemented"
+}

@@ -56,7 +56,16 @@ bin/*
 !/examples/parallel_window_windows.json
 !/examples/tiny-windows.json
 !/examples/seam-shots.json
+# Visual demo sources and checked-in captures from the real Rust CLI.
+!/demo/package.json
+!/demo/package-lock.json
+!/demo/tsconfig.json
+!/demo/public/fixtures/*.json
+/demo/node_modules/
+/demo/dist/
+/demo/*.tsbuildinfo
 *.syndromes
+!/demo/public/fixtures/*.syndromes
 *.defects
 *.vcd
 !tester/src/test/resources/*.vhd
