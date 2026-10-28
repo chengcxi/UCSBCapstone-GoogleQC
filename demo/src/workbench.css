@@ -1,5 +1,28 @@
 /* Deliberately utilitarian scientific workbench skin: flat panels, explicit
    controls, tabular results, subdued plots. No decorative gradients or cards. */
+.generation-entry { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 14px; margin-bottom: 16px; font-size: 12px; }
+.generation-entry p { margin: 5px 0 0; color: #52616b; }
+.generation-entry button { flex-shrink: 0; }
+.graph-laboratory { font-size: 12px; }
+.graph-laboratory table { width: 100%; border-collapse: collapse; font-size: 11px; text-align: left; }
+.graph-laboratory th, .graph-laboratory td { padding: 8px 10px; border-bottom: 1px solid #dde1e5; vertical-align: top; }
+.graph-laboratory thead { background: #f3f5f7; }
+.graph-laboratory td button { font: inherit; padding: 4px 6px; text-align: left; background: #f7f9fa; border: 1px solid #bdc6ce; }
+.generation-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); gap: 14px; padding: 14px; }
+.generation-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 14px; font-size: 12px; }
+.generation-actions input[type=number] { width: 65px; padding: 5px; }
+.generation-setup { padding: 12px; max-height: 300px; overflow: auto; font: 11px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.comparison-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.comparison-grid .bench-panel { min-width: 0; }
+.comparison-canvas { display: block; width: 100%; aspect-ratio: 760 / 440; background: white; }
+.comparison-hover { min-height: 34px; padding: 7px 12px; font: 10px var(--mono); overflow-wrap: anywhere; }
+.comparison-note { padding: 6px 12px; font-size: 12px; line-height: 1.55; color: #52616b; }
+.comparison-options, .comparison-legend { display: flex; flex-wrap: wrap; gap: 12px 22px; margin: 12px 0; font-size: 12px; }
+.comparison-options label { display: flex; align-items: center; gap: 5px; }
+.comparison-shot { padding: 4px 14px 10px; font-size: 12px; line-height: 1.6; }
+.comparison-details summary { padding: 12px; cursor: pointer; font-size: 12px; font-weight: 600; }
+.comparison-grid .bench-panel-header { flex-wrap: wrap; gap: 7px; }
+@media (max-width: 1050px) { .comparison-grid { grid-template-columns: minmax(0, 1fr); } }
 :root {
   font-family: Arial, Helvetica, sans-serif;
   color: #23272d;

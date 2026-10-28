@@ -3,6 +3,9 @@ import { ArrowDownToLine, Clipboard, FlaskConical, Play } from 'lucide-react';
 import { scenarios, type ScenarioId } from './data';
 import { accuracyLabel, latencyLabel, methodAccuracy, parseBenchmarkReport, type BenchmarkReport, type LatencyStats } from './benchmarkReport';
 import { detectorList, edgeList, observableList, type Graph } from './model';
+import { BenchmarkGenerator, generateCpuDataset } from './BenchmarkGenerator';
+import { savedDatasets, saveDataset, type SavedDataset } from './datasetStore';
+import { parseGraphComparison, type GraphComparison } from './graphComparison';
 
 type Props = {
   scenarioId: ScenarioId;
@@ -58,6 +61,9 @@ function LatencyPlot({ global, windows }: { global: LatencyStats; windows: Laten
 }
 
 export function BenchmarkWorkbench({ scenarioId, onScenarioChange, sourceHash, graph, binaryPresent, unavailableReason }: Props) {
+  const [datasets, setDatasets] = useState<SavedDataset[]>([]);
+  const [selected, setSelected] = useState<SavedDataset | null>(null);
+  const [storageNote, setStorageNote] = useState<string | null>(null);
   const [warmup, setWarmup] = useState(2);
   const [repeats, setRepeats] = useState(20);
   const [report, setReport] = useState<BenchmarkReport | null>(null);
@@ -67,10 +73,18 @@ export function BenchmarkWorkbench({ scenarioId, onScenarioChange, sourceHash, g
   const [population, setPopulation] = useState<'nonempty' | 'all'>('nonempty');
   const requestEpoch = useRef(0);
   const userMeasurement = useRef(false);
+  const activeGraph = selected?.capture.graph ?? graph;
+  const activeHash = selected?.capture.cpu_benchmark?.provenance?.input_sha256 ?? sourceHash;
+
+  useEffect(() => {
+    savedDatasets().then(rows => setDatasets(rows.filter(row => {
+      try { return !!parseGraphComparison(row.capture).cpu_benchmark; } catch { return false; }
+    }))).catch(() => setStorageNote('Browser storage is unavailable; export your dataset to keep it.'));
+  }, []);
 
   useEffect(() => {
     const epoch = ++requestEpoch.current;
-    userMeasurement.current = false;
+    userMeasurement.current = false; setSelected(null);
     setReport(null); setOrigin(null); setError(null); setRunning(false);
     // This optional, committed report was measured by the release Rust CLI on
     // GitHub Actions, not inferred from saved corrections. A different dataset
@@ -87,12 +101,42 @@ export function BenchmarkWorkbench({ scenarioId, onScenarioChange, sourceHash, g
   }, [scenarioId, sourceHash, graph]);
 
   function verifySource(next: BenchmarkReport) {
-    if (!sourceHash || !graph) throw new Error('Load the matching CLI graph fixture before opening a report.');
-    if (next.provenance?.input_sha256 !== sourceHash) {
+    if (!activeHash || !activeGraph) throw new Error('Load the matching graph dataset before opening a report.');
+    if (next.provenance?.input_sha256 !== activeHash) {
       throw new Error('This report was produced from a different source. Select its matching fixture before loading it.');
     }
-    if (next.settings.shot_count !== (scenarioId === 'tiny' ? 24 : 5)) {
+    if (next.settings.shot_count !== (selected ? selected.capture.shots.length : scenarioId === 'tiny' ? 24 : 5)) {
       throw new Error('This report has a different shot count from the selected example.');
+    }
+    if (selected && next.shots.some((shot, i) => JSON.stringify(shot.defects) !== JSON.stringify(selected.capture.shots[i].defects)
+      || JSON.stringify(shot.actual_observables) !== JSON.stringify(selected.capture.shots[i].actual))) throw new Error('Report shot inputs differ from this dataset.');
+  }
+
+  async function acceptGenerated(capture: GraphComparison, name: string, imported: boolean) {
+    if (!capture.cpu_benchmark) return;
+    userMeasurement.current = true; ++requestEpoch.current;
+    const row: SavedDataset = { id: selected && !imported && selected.name === name ? selected.id : crypto.randomUUID(), name, origin: imported ? 'imported' : 'generated', capture };
+    setDatasets(previous => [...previous.filter(item => item.id !== row.id), row]);
+    setSelected(row); setReport(capture.cpu_benchmark); setOrigin(imported ? 'imported' : 'local'); setError(null); setRunning(false);
+    setWarmup(capture.cpu_benchmark.settings.warmup_passes); setRepeats(capture.cpu_benchmark.settings.measured_passes);
+    try { await saveDataset(row); } catch { setStorageNote('Dataset is available this session. Export dataset JSON to keep a copy.'); }
+  }
+
+  function chooseDataset(value: string) {
+    ++requestEpoch.current; userMeasurement.current = true;
+    setError(null); setRunning(false);
+    const row = datasets.find(item => item.id === value);
+    if (row) {
+      setSelected(row); setReport(row.capture.cpu_benchmark ?? null); setOrigin('imported');
+      if (row.capture.cpu_benchmark) { setWarmup(row.capture.cpu_benchmark.settings.warmup_passes); setRepeats(row.capture.cpu_benchmark.settings.measured_passes); }
+    } else {
+      setSelected(null); setReport(null); setOrigin(null); onScenarioChange(value as ScenarioId);
+      if (value === scenarioId && value === 'seam') {
+        const epoch = requestEpoch.current;
+        fetch(`${import.meta.env.BASE_URL}fixtures/seam.benchmark.json`).then(r => r.json()).then(value => {
+          if (epoch === requestEpoch.current) { setReport(parseBenchmarkReport(value, graph)); setOrigin('ci-sample'); }
+        }).catch(() => {});
+      }
     }
   }
 
@@ -103,15 +147,21 @@ export function BenchmarkWorkbench({ scenarioId, onScenarioChange, sourceHash, g
       return;
     }
     const epoch = requestEpoch.current;
-    setRunning(true); setError(null);
+    setRunning(true); setError(null); setReport(null);
     try {
+      if (selected) {
+        if (!selected.capture.generation_settings) throw new Error('This imported dataset has no generation settings. Generate a fresh dataset to measure locally.');
+        const capture = await generateCpuDataset({ ...selected.capture.generation_settings, warmup, repeats, measure: true });
+        if (epoch === requestEpoch.current) await acceptGenerated(capture, selected.name, false);
+        return;
+      }
       const response = await fetch('/api/benchmark', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ scenario: scenarioId, warmup, repeats }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'The CPU benchmark could not complete.');
-      const next = parseBenchmarkReport(result, graph);
+      const next = parseBenchmarkReport(result, activeGraph);
       verifySource(next);
       if (epoch === requestEpoch.current) { userMeasurement.current = true; setReport(next); setOrigin('local'); }
     } catch (caught) {
@@ -125,7 +175,7 @@ export function BenchmarkWorkbench({ scenarioId, onScenarioChange, sourceHash, g
     if (!file) return;
     const epoch = requestEpoch.current;
     try {
-      const next = parseBenchmarkReport(JSON.parse(await file.text()), graph);
+      const next = parseBenchmarkReport(JSON.parse(await file.text()), activeGraph);
       if (epoch !== requestEpoch.current) return;
       verifySource(next);
       userMeasurement.current = true;
@@ -139,12 +189,12 @@ export function BenchmarkWorkbench({ scenarioId, onScenarioChange, sourceHash, g
     if (!report) return;
     const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2) + '\n'], { type: 'application/json' }));
     const link = document.createElement('a');
-    link.href = url; link.download = `${scenarioId}.benchmark.json`; link.click();
+    link.href = url; link.download = `${selected ? 'generated' : scenarioId}.benchmark.json`; link.click();
     setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   async function copyCommand() {
-    try { await navigator.clipboard.writeText(cpuCommand(scenarioId, warmup, repeats)); }
+    try { await navigator.clipboard.writeText(command); }
     catch { setError('Clipboard access is unavailable. The command is also shown below.'); }
   }
 
@@ -154,7 +204,8 @@ export function BenchmarkWorkbench({ scenarioId, onScenarioChange, sourceHash, g
   const baselineAccuracy = report && methodAccuracy(report, 'baseline', useNonempty);
   const windowAccuracy = report && methodAccuracy(report, 'windowed', useNonempty);
   const ratio = baseline && windows && windows.median_ns > 0 ? baseline.median_ns / windows.median_ns : null;
-  const command = cpuCommand(scenarioId, warmup, repeats);
+  const settings = selected?.capture.generation_settings;
+  const command = settings ? `.venv/bin/python tools/benchmark_window.py --distance ${settings.distance} --rounds ${settings.rounds} --shots ${settings.shots} --noise ${settings.noise} --seed ${settings.seed} --basis ${settings.basis} --commit-slices ${settings.commit} --buffer-slices ${settings.buffer} --output artifacts/generated\ncargo run --release --locked -- benchmark artifacts/generated/decoded.ir.json \\\n  --shots artifacts/generated/shots.json --allow-correlated \\\n  --warmup ${warmup} --repeats ${repeats} --output artifacts/generated.benchmark.json` : selected ? 'Import the dataset generation settings to reproduce these inputs locally.' : cpuCommand(scenarioId, warmup, repeats);
 
   return <section className="benchmark-workbench" aria-label="CPU decoder benchmark">
     <div className="bench-heading">
@@ -164,28 +215,39 @@ export function BenchmarkWorkbench({ scenarioId, onScenarioChange, sourceHash, g
     </div>
 
     <section className="bench-panel bench-setup" aria-label="Benchmark settings">
-      <div className="bench-panel-header"><strong>Configuration</strong><span>Fixed examples · no browser-side timing</span></div>
+      <div className="bench-panel-header"><strong>Configuration</strong><span>Saved and generated datasets · real CPU execution</span></div>
       <div className="bench-form">
         <div className="bench-field"><label htmlFor="benchmark-scenario">Dataset</label>
-          <select id="benchmark-scenario" value={scenarioId} onChange={event => onScenarioChange(event.target.value as ScenarioId)}>
+          <select id="benchmark-scenario" disabled={running} value={selected?.id ?? scenarioId} onChange={event => chooseDataset(event.target.value)}>
             <option value="seam">Seam DEM · 5 supplied shots</option>
             <option value="tiny">Stim circuit · 24 seed-7 shots</option>
+            {datasets.map(row => <option value={row.id} key={row.id}>{row.name}</option>)}
           </select></div>
         <div className="bench-field bench-number"><label htmlFor="benchmark-warmup">Warmup passes</label>
-          <input id="benchmark-warmup" type="number" min="0" max="10" value={warmup} onChange={event => setWarmup(Number(event.target.value))} /></div>
+          <input id="benchmark-warmup" disabled={running} type="number" min="0" max="10" value={warmup} onChange={event => setWarmup(Number(event.target.value))} /></div>
         <div className="bench-field bench-number"><label htmlFor="benchmark-repeats">Measured passes</label>
-          <input id="benchmark-repeats" type="number" min="1" max="100" value={repeats} onChange={event => setRepeats(Number(event.target.value))} /></div>
+          <input id="benchmark-repeats" disabled={running} type="number" min="1" max="100" value={repeats} onChange={event => setRepeats(Number(event.target.value))} /></div>
         <button type="button" className="bench-run" onClick={run} disabled={running || !binaryPresent}>
           <Play size={13} /> {running ? 'Measuring…' : 'Run CPU comparison'}
         </button>
       </div>
       <div className="bench-setup-bottom">
-        <span>{binaryPresent ? 'Python/Stim are not needed: these shots were already captured.' : unavailableReason ?? 'No Rust binary found. Import a real benchmark report or build the CLI locally.'}</span>
-        <div><label className="bench-file-button">Load report JSON<input type="file" accept=".json,application/json" onChange={event => { void importReport(event.target.files?.[0]); event.target.value = ''; }} /></label>
+        <span>{selected ? 'Generated datasets use the same seed and shot count when rerun. Stim is required.' : binaryPresent ? 'Python/Stim are not needed: these shots were already captured.' : unavailableReason ?? 'No Rust binary found. Import a real benchmark report or build the CLI locally.'}</span>
+        <div><label className="bench-file-button">Load report JSON<input disabled={running} type="file" accept=".json,application/json" onChange={event => { void importReport(event.target.files?.[0]); event.target.value = ''; }} /></label>
           <button type="button" onClick={copyCommand}><Clipboard size={13} /> Copy command</button></div>
       </div>
+      {selected && <div className="generation-actions"><button onClick={() => {
+        const url = URL.createObjectURL(new Blob([JSON.stringify(selected.capture)], {type:'application/json'}));
+        const link = document.createElement('a'); link.href = url; link.download = 'generated-benchmark.dataset.json'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 0);
+      }}>Export dataset JSON</button><span>{selected.capture.graph.num_detectors} detectors · {selected.capture.graph.initializer.weighted_edges.length} edges · {selected.capture.windows.length} windows</span></div>}
       {error && <p className="bench-error" role="alert">{error}</p>}
+      {storageNote && <p role="status" className="comparison-note">{storageNote}</p>}
     </section>
+
+    <BenchmarkGenerator warmup={warmup} repeats={repeats} running={running}
+      onStart={() => { ++requestEpoch.current; userMeasurement.current = true; setReport(null); setError(null); setRunning(true); }}
+      onComplete={(capture, name, imported) => { void acceptGenerated(capture, name, imported); }}
+      onFailure={message => { setRunning(false); setError(message); }} />
 
     <div className="bench-results-header"><strong>Results</strong><span>{report ? `${origin === 'local' ? 'MEASURED HERE' : origin === 'ci-sample' ? 'RECORDED CI SAMPLE' : 'IMPORTED REPORT'} · ${report.host.profile.toUpperCase()} · ${report.host.os}/${report.host.arch}` : 'NO TIMING DATA LOADED'}</span></div>
     {report && baseline && windows && baselineAccuracy && windowAccuracy ? <>
@@ -236,7 +298,7 @@ export function BenchmarkWorkbench({ scenarioId, onScenarioChange, sourceHash, g
 
     <div className="bench-bottom-grid">
       <section className="bench-panel bench-methodology"><div className="bench-panel-header"><strong>Measurement protocol</strong><span>REAL EXECUTION ONLY</span></div>
-        <ol><li>Both decoders receive the same {scenarios[scenarioId].secondary.toLowerCase()} and the same weighted global graph.</li>
+        <ol><li>Both decoders receive the same {selected ? 'seeded Stim samples' : scenarios[scenarioId].secondary.toLowerCase()} and the same weighted global graph.</li>
           <li>Baseline: Micro Blossom <code>SolverEmbeddedComb</code> on the entire global graph. Comparison: the existing open-top then closed-bottom CPU window decoder.</li>
           <li>Per-shot monotonic timing covers decoder calls: solver construction, solve and subgraph extraction, plus local routing and seam stitching in the window path. It excludes Stim, graph conversion, external parity checks and file I/O. Order alternates.</li>
           <li>Every correction must clear the global residual. Logical accuracy is the fraction of truth-labeled input shots with an exact observable-flip match; nonempty/all views change its population, never its timed sample count.</li></ol>

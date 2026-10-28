@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { constants } from 'node:fs';
+import { constants, existsSync } from 'node:fs';
 import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,11 +8,14 @@ import { promisify } from 'node:util';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
 import { shotsFromCorrectionCapture } from './src/benchmarkShots';
+import { parseGenerationConfig } from './src/generationConfig';
 
 const exec = promisify(execFile);
 const repo = fileURLToPath(new URL('..', import.meta.url));
-const binary = process.env.MICROBLOSSOM_TOOLCHAIN_BINARY || path.join(repo, 'target/debug/microblossom-toolchain');
-const python = process.env.MICROBLOSSOM_PYTHON || 'python3';
+const release = path.join(repo, 'target/release/microblossom-toolchain');
+const binary = process.env.MICROBLOSSOM_TOOLCHAIN_BINARY || (existsSync(release) ? release : path.join(repo, 'target/debug/microblossom-toolchain'));
+const python = process.env.MICROBLOSSOM_PYTHON || (existsSync(path.join(repo, '.venv/bin/python')) ? path.join(repo, '.venv/bin/python') : 'python3');
+const runner = process.env.MICROBLOSSOM_ACCURACY_BINARY || path.join(repo, 'target/release/examples/window_accuracy');
 
 function send(res: import('node:http').ServerResponse, status: number, data: unknown) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -22,6 +25,8 @@ function send(res: import('node:http').ServerResponse, status: number, data: unk
 async function availability() {
   let binaryPresent = false;
   let stimPresent = false;
+  let generatorDependencies = false;
+  let runnerPresent = false;
   try {
     await access(binary, constants.X_OK);
     binaryPresent = true;
@@ -30,7 +35,13 @@ async function availability() {
     await exec(python, ['-c', 'import stim'], { timeout: 4000 });
     stimPresent = true;
   } catch { /* Stim is only needed to run new samples. */ }
+  try { await access(runner, constants.X_OK); runnerPresent = true; } catch { /* Display setup instructions. */ }
+  try { await exec(python, ['-c', 'import stim, numpy, fusion_blossom'], { timeout: 4000 }); generatorDependencies = true; } catch { /* Optional graph generator dependencies. */ }
   return {
+    generationAvailable: binaryPresent && runnerPresent && generatorDependencies,
+    generationReason: !binaryPresent || !runnerPresent
+      ? 'Run cargo build --release --locked and cargo build --release --locked --example window_accuracy.'
+      : !generatorDependencies ? 'Install requirements-dev.txt in .venv, or set MICROBLOSSOM_PYTHON to Python with Stim, NumPy and Fusion Blossom.' : null,
     liveAvailable: binaryPresent && stimPresent,
     benchmarkAvailable: binaryPresent,
     benchmarkReason: binaryPresent ? null : 'Build the Rust CLI with cargo build --release --locked, then set MICROBLOSSOM_TOOLCHAIN_BINARY to the absolute path of target/release/microblossom-toolchain.',
@@ -50,17 +61,49 @@ async function readBody(req: import('node:http').IncomingMessage) {
     text += part.toString();
     if (text.length > 2048) throw new Error('Request too large');
   }
-  return JSON.parse(text) as { scenario?: unknown; seed?: unknown; count?: unknown; warmup?: unknown; repeats?: unknown };
+  return JSON.parse(text) as Record<string, unknown>;
 }
 
 /** Dev-only, fixed-fixture bridge. Never accepts a path or shell command from the browser. */
 function toolchainApi(): Plugin {
+  let generating = false;
   return {
     name: 'local-toolchain-api',
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         if (req.url?.split('?')[0] === '/api/status' && req.method === 'GET') {
           send(res, 200, await availability());
+          return;
+        }
+        if (req.url?.split('?')[0] === '/api/generate') {
+          if (req.method !== 'POST') return send(res, 405, { error: 'POST required' });
+          if (req.headers['sec-fetch-site'] === 'cross-site'
+              || (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host)) {
+            return send(res, 403, { error: 'Generation requests must originate from this workbench' });
+          }
+          if (generating) return send(res, 409, { error: 'A graph generation job is already running' });
+          let config;
+          try { config = parseGenerationConfig(await readBody(req)); }
+          catch (error) { return send(res, 400, { error: (error as Error).message }); }
+          generating = true;
+          let directory: string | undefined;
+          try {
+            const state = await availability();
+            if (!state.generationAvailable) return send(res, 503, { error: state.generationReason });
+            directory = await mkdtemp(path.join(tmpdir(), 'microblossom-generated-'));
+            const configPath = path.join(directory, 'config.json');
+            await writeFile(configPath, JSON.stringify(config));
+            await exec(python, [path.join(repo, 'tools/generate_workbench.py'), '--config', configPath,
+              '--output', directory, '--binary', binary, '--runner', runner],
+            { cwd: repo, timeout: 420_000, maxBuffer: 2 * 1024 * 1024 });
+            send(res, 200, JSON.parse(await readFile(path.join(directory, 'comparison.json'), 'utf8')));
+          } catch (error) {
+            const failure = error as Error & { stderr?: string };
+            send(res, 422, { error: (failure.stderr || failure.message).trim().slice(-2000) });
+          } finally {
+            generating = false;
+            if (directory) await rm(directory, { recursive: true, force: true });
+          }
           return;
         }
         if (req.url?.split('?')[0] === '/api/benchmark') {

@@ -15,6 +15,49 @@ npm run dev
 
 Open Vite's URL (port 4173 by default). The Decoder tab uses real saved CLI artifacts: the Stim circuit supplies 24 seed-7 sampled shots, while the seam DEM supplies five explicit shots. Pick a shot and step through the top/open and bottom/closed windows. The diagram draws each global graph detector and weighted edge once, with window membership overlaid on the same IDs. A dashed T marker describes a **local** temporal cut, not a vertex in the global graph. Exported tentative solver edges do not exist, so the UI does not depict any.
 
+## Generate datasets directly in CPU Benchmark
+
+The **Benchmark** page includes a **Generate a benchmark dataset** panel.
+Choose distance, rounds, shots and noise; seed, basis and commit/buffer widths
+are under **Seed and window settings**. Set the warmup and measured passes
+in the normal Configuration panel, then click **Generate and benchmark**.
+
+The local server runs Stim and the Rust toolchain and measures full-graph
+Micro Blossom against sequential-window Micro Blossom. A successful run is
+selected in the normal Dataset menu and fills the existing latency chart,
+accuracy summary and per-shot comparison table. There is no separate generator
+page or graph visualization step.
+
+Generated datasets persist in this browser. Select one and use **Run CPU
+comparison** to regenerate its same seeded samples and measure again with the
+current warmup/repeat settings. **Export dataset JSON** retains circuit,
+graph, inputs, settings and timing report; **Import benchmark dataset JSON**
+loads that portable dataset back into the same benchmark page. **Save JSON**
+and **Load report JSON** remain available for timing reports alone (select
+the matching dataset before loading a report). Imported timings are not
+independently attested.
+
+Set up generation from the repository root:
+
+```sh
+.venv/bin/python -m pip install -r requirements-dev.txt
+cargo build --release --locked
+cargo build --release --locked --example window_accuracy
+npm --prefix demo run dev
+```
+
+The server prefers `.venv/bin/python` and the release CLI. Executable overrides:
+`MICROBLOSSOM_PYTHON`, `MICROBLOSSOM_TOOLCHAIN_BINARY` and
+`MICROBLOSSOM_ACCURACY_BINARY`. Restart Vite after setup.
+
+Interactive limits are 1,500 global detectors, 400 detectors per window, 256
+shots and 5,000 measured samples per method. The four configured noise channels
+use the specified probability. Correlated DEM components are explicitly
+approximated as independent edges. Invalid window corrections stop the timing
+comparison with an explicit error; no samples are silently dropped and no
+partial report is shown. Generation requires the local development server;
+saved datasets can be imported in a static preview.
+
 The Benchmark tab opens its seam example with a **real release-binary CI
 measurement** from [GitHub Actions run 40595098673](https://github.com/chengcxi/microblossom-parallelism/actions/runs/40595098673),
 commit `c486703`. Both CPU methods match the supplied logical-observable truth
