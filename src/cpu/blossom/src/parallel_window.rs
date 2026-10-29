@@ -636,27 +636,76 @@ impl ParallelWindowDecoder {
                 return Err(format!("invalid or duplicate global defect {detector}"));
             }
         }
+        
         let initial = residual.clone();
         let mut committed = BTreeSet::new();
+
+        eprintln!("\n========== DECODING SHOT ==========");
+        eprintln!("Initial defects: {:?}", initial);
+
+        // LAYER 0
         for window in windows.iter().filter(|w| w.layer == WindowLayer::Top) {
+            eprintln!("\n--- Layer 0: {} ---", window.id);
+
             let tentative = solve_encoded_window(window, &initial)?;
             let owned: BTreeSet<_> = window.commit_edges.iter().copied().collect();
+
+            eprintln!("Input defects: {:?}", initial);
+            eprintln!("Proposed edges: {:?}", tentative);
+            eprintln!("Owned edges: {:?}", owned);
+
             for eid in tentative {
                 if owned.contains(&eid) {
+                    eprintln!("Committing edge {}", eid);
+
                     toggle_set(&mut committed, eid);
-                    toggle_global_edge(&mut residual, &self.global_graph, &global_virtuals, eid);
+                    toggle_global_edge(
+                        &mut residual,
+                        &self.global_graph,
+                        &global_virtuals,
+                        eid,
+                    );
+                } else {
+                    eprintln!("Discarding edge {} (not owned)", eid);
                 }
             }
+
+            eprintln!("Residual after this window: {:?}", residual);
         }
-        // All bottom windows consume the same top-layer residual. The final
-        // boundary check below catches gaps, overlap and unmatched defects.
+
+        // LAYER 1
         let bottom_input = residual.clone();
+
+        eprintln!("\n--- Layer 0 to Layer 1 handoff ---");
+        eprintln!("Residual syndrome: {:?}", bottom_input);
+
         for window in windows.iter().filter(|w| w.layer == WindowLayer::Bottom) {
-            for eid in solve_encoded_window(window, &bottom_input)? {
+            eprintln!("\n--- Layer 1: {} ---", window.id);
+            eprintln!("Input defects: {:?}", bottom_input);
+
+            let selected = solve_encoded_window(window, &bottom_input)?;
+            eprintln!("Selected edges: {:?}", selected);
+
+            for eid in selected {
+                eprintln!("Committing edge {}", eid);
+
                 toggle_set(&mut committed, eid);
-                toggle_global_edge(&mut residual, &self.global_graph, &global_virtuals, eid);
+                toggle_global_edge(
+                    &mut residual,
+                    &self.global_graph,
+                    &global_virtuals,
+                    eid,
+                );
             }
+
+            eprintln!("Residual after this window: {:?}", residual);
         }
+
+        eprintln!("\n--- Final result ---");
+        eprintln!("Committed edges: {:?}", committed);
+        eprintln!("Final residual: {:?}", residual);
+        eprintln!("===================================\n");
+
         if !residual.is_empty() {
             return Err(format!("unmatched residual detectors: {residual:?}"));
         }
