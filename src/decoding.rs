@@ -118,6 +118,7 @@ pub fn prepare_decoder(
         .map(|&t| time_index(&times, t))
         .collect();
     let mut detector_owner = vec![None::<&str>; graph.num_detectors];
+    let mut edge_owner = vec![None::<&str>; graph.edge_metadata.len()];
     let mut encoded = Vec::with_capacity(annotations.len());
     for (plan, cut) in annotations.iter().zip(cut_windows) {
         if let Some(&d) = plan
@@ -173,21 +174,53 @@ pub fn prepare_decoder(
                 ));
             }
         }
-        // Retain every selected edge incident to a committed detector.
-        // Cutting one of these edges would change that detector's parity.
+        // Detector-ID commits must keep every selected edge incident to a
+        // committed detector. This preserves the local solver's syndrome at
+        // that detector on BOTH sides of the commit, leaving residuals only
+        // in bottom regions. A midpoint interval starting at the first commit
+        // slice incorrectly discards edges into the preceding buffer slice.
         let mut commit_edges = BTreeSet::new();
         if plan.layer == 0 {
+            let local_edges: BTreeSet<_> = cut.edge_map.iter().copied().collect();
             for (eid, edge) in graph.edge_metadata.iter().enumerate() {
-                if edge.detectors.iter().any(|d| commit.contains(d)) {
-                    if !edge.detectors.iter().all(|d| members.contains(d)) {
-                        return Err(format!(
-                            "window {} commit incident edge {eid} crosses the outer boundary; enlarge its buffer",
-                            plan.id
-                        ));
-                    }
-                    commit_edges.insert(eid);
+                let detectors = &edge.detectors;
+                if !detectors.iter().any(|d| commit.contains(d)) {
+                    continue; // buffer-only edges provide context, never a commit
                 }
+                if !detectors.iter().all(|d| members.contains(d)) {
+                    return Err(format!(
+                        "window {} needs buffer coverage for edge {eid} incident to its commit",
+                        plan.id
+                    ));
+                }
+                if !local_edges.contains(&eid) {
+                    return Err(format!(
+                        "window {} is missing owned edge {eid} from its cut graph",
+                        plan.id
+                    ));
+                }
+                commit_edges.insert(eid);
             }
+        }
+        // Detector coverage alone does not cover edges between two closed
+        // bottom windows, or prevent an edge joining two top commits from
+        // being owned twice. Reject both before processing any shots.
+        let owned_edges: Vec<_> = if plan.layer == 0 {
+            commit_edges.iter().copied().collect()
+        } else {
+            cut.edge_map.clone()
+        };
+        for eid in owned_edges {
+            let owner = edge_owner
+                .get_mut(eid)
+                .ok_or_else(|| format!("window {} has an invalid edge map", plan.id))?;
+            if let Some(other) = *owner {
+                return Err(format!(
+                    "edge {eid} has overlapping commits in windows {other} and {}",
+                    plan.id
+                ));
+            }
+            *owner = Some(&plan.id);
         }
         encoded.push(EncodedWindow {
             id: cut.window_id.clone(),
@@ -208,6 +241,9 @@ pub fn prepare_decoder(
         return Err(format!(
             "detector {missing} is not owned by any window commit"
         ));
+    }
+    if let Some(missing) = edge_owner.iter().position(Option::is_none) {
+        return Err(format!("edge {missing} is not owned by any window commit"));
     }
     let global_init = initializer(&graph.initializer)?;
     let global_graph = MicroBlossomSingle::new(&global_init, &positions(&graph.positions));
@@ -319,6 +355,158 @@ mod tests {
         convert(ir, 100.0, false).unwrap()
     }
 
+    fn alternating_graph() -> Graph {
+        let ir: Dem = serde_json::from_value(serde_json::json!({
+            "schema_version":1,"num_detectors":5,"num_observables":2,
+            "detector_coordinates":[[0,0,0],[0,0,1],[0,0,2],[0,0,3],[0,0,4]],
+            "errors":[
+                {"probability":0.1,"components":[{"detectors":[0,1],"observables":[0]}]},
+                {"probability":0.1,"components":[{"detectors":[1,2],"observables":[1]}]},
+                {"probability":0.1,"components":[{"detectors":[2,3],"observables":[0,1]}]},
+                {"probability":0.1,"components":[{"detectors":[3,4],"observables":[]}]}
+            ],
+            "window_annotations":{"schema_version":1,"annotation_only":true,"windows":[
+                {"id":"A0","layer":0,"commit":[0],"buffer":[1],"temporal_boundary":"open",
+                 "commit_buffer_seams":[{"error":0,"component":0}],
+                 "outer_crossings":[{"error":1,"component":0}]},
+                {"id":"B0","layer":1,"commit":[1,2],"buffer":[],"temporal_boundary":"closed",
+                 "commit_buffer_seams":[],
+                 "outer_crossings":[{"error":0,"component":0},{"error":2,"component":0}]},
+                {"id":"A1","layer":0,"commit":[3,4],"buffer":[2],"temporal_boundary":"open",
+                 "commit_buffer_seams":[{"error":2,"component":0}],
+                 "outer_crossings":[{"error":1,"component":0}]}
+            ]}
+        }))
+        .unwrap();
+        convert(ir, 100.0, false).unwrap()
+    }
+
+    #[test]
+    fn rejects_unowned_bottom_seam_and_shared_top_edge() {
+        let mut graph = seam_graph();
+        graph.window_annotations["windows"][1]["commit"] = serde_json::json!([1]);
+        graph.window_annotations["windows"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "id":"B1","layer":1,"commit":[2],"buffer":[],"temporal_boundary":"closed"
+            }));
+        let cut = build_window_graphs(&graph).unwrap();
+        let error = prepare_decoder(&graph, &cut).err().unwrap();
+        assert!(error.contains("edge 1 is not owned"), "{error}");
+
+        let mut graph = seam_graph();
+        graph.window_annotations["windows"][1]["commit"] = serde_json::json!([2]);
+        graph.window_annotations["windows"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "id":"A1","layer":0,"commit":[1],"buffer":[0,2],"temporal_boundary":"open"
+            }));
+        let cut = build_window_graphs(&graph).unwrap();
+        let error = prepare_decoder(&graph, &cut).err().unwrap();
+        assert!(error.contains("edge 0 has overlapping commits"), "{error}");
+    }
+
+    #[test]
+    fn rejects_insufficient_buffer_and_missing_owned_edges() {
+        let mut graph = alternating_graph();
+        graph.window_annotations["windows"][2]["buffer"] = serde_json::json!([]);
+        let cut = build_window_graphs(&graph).unwrap();
+        let error = prepare_decoder(&graph, &cut).err().unwrap();
+        assert!(
+            error.contains("A1 needs buffer coverage for edge 2"),
+            "{error}"
+        );
+
+        let graph = alternating_graph();
+        let mut cut = build_window_graphs(&graph).unwrap();
+        let index = cut[2].edge_map.iter().position(|&eid| eid == 2).unwrap();
+        cut[2].edge_map.remove(index);
+        cut[2].initializer.weighted_edges.remove(index);
+        cut[2].edge_metadata.remove(index);
+        let error = prepare_decoder(&graph, &cut).err().unwrap();
+        assert!(error.contains("A1 is missing owned edge 2"), "{error}");
+    }
+
+    #[test]
+    fn exhaustive_line_faults_survive_both_seams_and_time_reversal() {
+        for times in [
+            [0.0, 1.0, 2.0, 3.0, 4.0],
+            [4.0, 3.0, 2.0, 1.0, 0.0],
+            [-10.0, -9.9, 0.0, 100.0, 1000.0],
+        ] {
+            let mut graph = alternating_graph();
+            for ((coords, pos), t) in graph
+                .detector_coordinates
+                .iter_mut()
+                .zip(&mut graph.positions)
+                .zip(times)
+            {
+                coords[2] = t;
+                pos.t = t;
+            }
+            let cut = build_window_graphs(&graph).unwrap();
+            let decoder = prepare_decoder(&graph, &cut).unwrap();
+            // A line is a tree: every possible fault subset has a unique
+            // correction, including chains spanning both seams and the ends.
+            for mask in 0..1 << graph.edge_metadata.len() {
+                let edges: Vec<_> = (0..graph.edge_metadata.len())
+                    .filter(|eid| mask & (1 << eid) != 0)
+                    .collect();
+                let expected = graph.evaluate_correction(&edges, &[]).unwrap();
+                let batch = ShotBatch {
+                    shots: vec![ShotInput {
+                        defects: expected.detectors,
+                        observables: Some(expected.observables),
+                    }],
+                };
+                let decoded = decode_batch(&graph, &decoder, batch)
+                    .unwrap_or_else(|e| panic!("times {times:?}, fault mask {mask}: {e}"));
+                assert_eq!(decoded.shots[0].committed_edges, edges);
+                assert!(decoded.shots[0].residual_syndrome.is_empty());
+                assert_eq!(decoded.shots[0].logical_error, Some(false));
+            }
+        }
+    }
+
+    #[test]
+    fn decodes_both_commit_seams_and_artificial_defects() {
+        let graph = alternating_graph();
+        let cut = build_window_graphs(&graph).unwrap();
+        let decoder = prepare_decoder(&graph, &cut).unwrap();
+        let batch: ShotBatch = serde_json::from_value(serde_json::json!({"shots":[
+            {"defects":[2,3], "observables":[0,1]},
+            {"defects":[0,1], "observables":[0]},
+            {"defects":[1,3], "observables":[0]},
+            {"defects":[0,4], "observables":[]},
+            {"defects":[3,4], "observables":[]}
+        ]}))
+        .unwrap();
+        let decoded = decode_batch(&graph, &decoder, batch).unwrap();
+        let expected = [vec![2], vec![0], vec![1, 2], vec![0, 1, 2, 3], vec![3]];
+        for (shot, edges) in decoded.shots.iter().zip(expected) {
+            assert_eq!(shot.committed_edges, edges);
+            assert!(shot.residual_syndrome.is_empty());
+            assert_eq!(shot.logical_error, Some(false));
+        }
+        // The right top commit toggles D2, creating B0's artificial event.
+        let top_edges: Vec<_> = decoded.shots[2]
+            .committed_edges
+            .iter()
+            .copied()
+            .filter(|&eid| graph.edge_metadata[eid].detectors.contains(&3))
+            .collect();
+        assert_eq!(top_edges, vec![2]);
+        assert_eq!(
+            graph
+                .evaluate_correction(&top_edges, &[1, 3])
+                .unwrap()
+                .residual_syndrome,
+            vec![1, 2]
+        );
+    }
+
     #[test]
     fn decoded_seam_and_boundary_have_zero_residual() {
         let graph = seam_graph();
@@ -415,7 +603,7 @@ mod tests {
             prepare_decoder(&graph, &cut)
                 .err()
                 .unwrap()
-                .contains("overlapping or unmapped top commits")
+                .contains("edge 0 has overlapping commits")
         );
     }
 
@@ -429,7 +617,7 @@ mod tests {
             prepare_decoder(&graph, &cut)
                 .err()
                 .unwrap()
-                .contains("enlarge its buffer")
+                .contains("needs buffer coverage")
         );
     }
 

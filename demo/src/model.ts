@@ -105,6 +105,9 @@ export function traceShot(artifacts: Artifacts, shot: Shot): ShotTrace {
   }
 
   const bottomAvailable = new Set(windows.windows.filter(window => window.layer === 1).flatMap(window => window.edge_map));
+  if ([...bottomAvailable].some(edge => topOwned.has(edge))) {
+    throw new Error('Overlapping top and bottom edge ownership');
+  }
   const topEdges = shot.committed_edges.filter(edge => topOwned.has(edge));
   const bottomEdges = shot.committed_edges.filter(edge => !topOwned.has(edge));
   if (bottomEdges.some(edge => !bottomAvailable.has(edge))) {

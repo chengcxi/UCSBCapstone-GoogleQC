@@ -136,3 +136,34 @@ test('supplied seam shot actually passes a residual from the open top to the clo
   assert.deepEqual(trace.bottomEdges, [1]);
   assert.deepEqual(trace.topResidual, [1, 2]);
 });
+
+test('a top commit into its earlier buffer produces the bottom seam residual', () => {
+  // Hand-worked A0/B0/A1 regression, also exercised by the real Rust CLI.
+  const graph = {
+    detector_coordinates: [[0, 0, 0], [0, 0, 1], [0, 0, 2], [0, 0, 3], [0, 0, 4]],
+    edge_metadata: [
+      { detectors: [0, 1], observables: [0] },
+      { detectors: [1, 2], observables: [1] },
+      { detectors: [2, 3], observables: [0, 1] },
+      { detectors: [3, 4], observables: [] },
+    ],
+    window_annotations: { windows: [
+      { id: 'A0', layer: 0, commit: [0], buffer: [1] },
+      { id: 'B0', layer: 1, commit: [1, 2], buffer: [] },
+      { id: 'A1', layer: 0, commit: [3, 4], buffer: [2] },
+    ] },
+  };
+  const windows = { windows: [
+    { window_id: 'A0', layer: 0, edge_map: [0, 1] },
+    { window_id: 'B0', layer: 1, edge_map: [1] },
+    { window_id: 'A1', layer: 0, edge_map: [1, 2, 3] },
+  ] };
+  const shot = { defects: [1, 3], committed_edges: [1, 2],
+    predicted_observables: [0], residual_syndrome: [] };
+  const trace = traceShot({ graph, windows }, shot);
+  assert.deepEqual(trace.topEdges, [2]);
+  assert.deepEqual(trace.bottomEdges, [1]);
+  assert.deepEqual(trace.topResidual, [1, 2]);
+  assert.deepEqual(trace.finalResidual, []);
+  assert.deepEqual(trace.predicted, [0]);
+});

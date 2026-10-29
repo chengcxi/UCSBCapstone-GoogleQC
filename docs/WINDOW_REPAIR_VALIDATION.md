@@ -2,7 +2,7 @@
 
 Top windows commit every selected edge touching a commit detector. All real endpoints must be inside the window; insufficient buffers and duplicate top ownership are rejected. Before layer 1, residuals inside top commits or outside bottom coverage fail with detector/window context. A full-graph top commit needs no bottom window.
 
-Validation: 23 toolchain library tests, 6 oracle tests, 19 UI tests, and the production UI build passed. Tests include the three-detector middle commit, both seam directions, experiment endpoints, insufficient buffers, duplicate top edge claims, and a genuinely fully committed full-graph window (all eight syndromes and logical parity).
+Validation: 27 toolchain library tests, 6 oracle tests, 20 UI tests, and the production UI build passed. Tests include the three-detector middle commit, both seam directions, experiment endpoints, insufficient buffers, duplicate top edge claims, and a genuinely fully committed full-graph window (all eight syndromes and logical parity).
 
 ## Paired buffer sweep
 
@@ -25,3 +25,7 @@ Reproduce each distance-5 row after building the release binary and `window_accu
 ```
 
 Change `--buffer-slices` and the output suffix for the other rows. Raw summaries, labeled shots, corrections and circuit inputs are in `artifacts/repair-window/`. The summary's inherited `host_patch` text describes an older host printing workaround, not the commitment repair; binary hashes identify the measured builds.
+
+## Additional edge-coverage regression tests
+
+Imported from `fix/window-commit-boundaries`: five-detector alternating top/bottom/top windows, all 16 fault subsets under forward, reversed, and uneven detector times, missing owned cut edges, and unowned edges between closed bottom windows. The CLI integration suite also exercises both seam directions, saved-shot replay, and a 64-shot distance-3 memory with three top and two bottom windows. Existing pre-layer-1 residual checks, incident-edge oracle, and fully committed full-graph tests remain in place.

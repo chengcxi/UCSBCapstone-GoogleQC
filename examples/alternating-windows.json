@@ -1,0 +1,7 @@
+{
+  "windows": [
+    {"id": "A0", "layer": 0, "commit": [0], "buffer": [1]},
+    {"id": "B0", "layer": 1, "commit": [1, 2], "buffer": []},
+    {"id": "A1", "layer": 0, "commit": [3, 4], "buffer": [2]}
+  ]
+}

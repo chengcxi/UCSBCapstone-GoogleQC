@@ -92,3 +92,7 @@ vivado.*
 
 binding.h
 *.tar.gz
+
+# Alternating-window regression inputs
+!/examples/alternating-shots.json
+!/examples/alternating-windows.json

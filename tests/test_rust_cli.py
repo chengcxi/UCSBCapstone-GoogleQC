@@ -1,6 +1,7 @@
 """Real Rust CLI integration; stub handoff tests are NOT upstream hardware tests."""
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -87,6 +88,78 @@ class RustCliTests(unittest.TestCase):
         self.assertEqual(first, json.loads(Path(str(out) + '.corrections.json').read_text()))
         self.assertEqual(json.loads(Path(str(self.prefix) + '.windows.json').read_text()),
                          json.loads(Path(str(out) + '.windows.json').read_text()))
+
+    def test_alternating_windows_decode_both_seam_directions(self):
+        shots = ROOT / 'examples/alternating-shots.json'
+        self.assert_ok(self.compile(ROOT / 'examples/alternating-seam.dem', '--kind', 'dem',
+                                    '--windows', ROOT / 'examples/alternating-windows.json',
+                                    '--shots', shots))
+        corrected = json.loads(Path(str(self.prefix) + '.corrections.json').read_text())
+        self.assertEqual([s['committed_edges'] for s in corrected['shots']],
+                         [[2], [0], [1, 2], [0, 1, 2, 3], [3], [1], []])
+        self.assertTrue(all(not s['residual_syndrome'] and not s['logical_error']
+                            for s in corrected['shots']))
+        cut = json.loads(Path(str(self.prefix) + '.windows.json').read_text())
+        self.assertEqual([w['layer'] for w in cut['windows']], [0, 1, 0])
+        out = self.path / 'alternating-export'
+        self.assert_ok(self.run_cli('export', str(self.prefix) + '.ir.json',
+                                    '--output', out, '--shots', shots))
+        self.assertEqual(corrected, json.loads(Path(str(out) + '.corrections.json').read_text()))
+
+    def test_saved_tiny_shots_replay_without_resampling(self):
+        fixture = ROOT / 'demo/public/fixtures'
+        captured = json.loads((fixture / 'tiny.corrections.json').read_text())
+        shots = self.path / 'captured-shots.json'
+        shots.write_text(json.dumps({'shots': [
+            {'defects': shot['defects'], 'observables': shot['actual_observables']}
+            for shot in captured['shots']]}))
+        self.assert_ok(self.run_cli('export', fixture / 'tiny.ir.json',
+                                    '--shots', shots, '--output', self.prefix))
+        self.assertEqual(captured,
+                         json.loads(Path(str(self.prefix) + '.corrections.json').read_text()))
+
+    def test_surface_memory_with_three_top_and_two_bottom_windows(self):
+        circuit = stim.Circuit.generated(
+            'surface_code:rotated_memory_z', distance=3, rounds=12,
+            after_clifford_depolarization=0.001,
+            before_measure_flip_probability=0.001,
+            after_reset_flip_probability=0.001,
+            before_round_data_depolarization=0.001)
+        source = self.path / 'memory.stim'
+        circuit.to_file(source)
+        coordinates = circuit.detector_error_model(decompose_errors=True).get_detector_coordinates()
+        self.assertEqual({c[2] for c in coordinates.values()}, set(range(13)))
+
+        def detectors(times):
+            return [d for d, c in coordinates.items() if c[2] in times]
+
+        layout = [
+            ('A0', 0, [0], [1]),
+            ('B0', 1, [1, 2, 3, 4], []),
+            ('A1', 0, [5], [4, 6]),
+            ('B1', 1, [6, 7, 8, 9], []),
+            ('A2', 0, [10, 11, 12], [9]),
+        ]
+        plan = self.path / 'memory-windows.json'
+        plan.write_text(json.dumps({'windows': [
+            {'id': name, 'layer': layer, 'commit': detectors(commit), 'buffer': detectors(buffer)}
+            for name, layer, commit, buffer in layout]}))
+        self.assert_ok(self.compile(source, '--windows', plan, '--allow-correlated',
+                                    '--sample-shots', '64', '--seed', '17'))
+        corrected = json.loads(Path(str(self.prefix) + '.corrections.json').read_text())
+        graph = self.graph()
+        self.assertEqual(len(corrected['shots']), 64)
+        self.assertTrue(any(s['defects'] for s in corrected['shots']))
+        for shot in corrected['shots']:
+            residual, parity = set(shot['defects']), set()
+            for eid in shot['committed_edges']:
+                residual.symmetric_difference_update(graph['edge_metadata'][eid]['detectors'])
+                parity.symmetric_difference_update(graph['edge_metadata'][eid]['observables'])
+            self.assertEqual(residual, set())
+            self.assertEqual(shot['residual_syndrome'], [])
+            self.assertEqual(shot['predicted_observables'], sorted(parity))
+            self.assertEqual(shot['logical_error'],
+                             shot['predicted_observables'] != shot['actual_observables'])
 
     def test_cpu_benchmark_uses_same_real_shots_and_keeps_fpga_unmeasured(self):
         ir = ROOT / 'demo/public/fixtures/seam.ir.json'
@@ -246,7 +319,9 @@ class RustCliTests(unittest.TestCase):
     def stub_parser(self, mode):
         """Protocol-only stand-in. Native decoder tests below use real Rust code."""
         stub = self.path / 'parser stub'
-        stub.write_text(f'''#!{sys.executable}
+        # Use a shell launcher so interpreter paths containing spaces work.
+        stub.write_text(f'''#!/bin/sh
+exec {shlex.quote(sys.executable)} - "$@" <<'STUB_PY'
 import json, pathlib, sys
 assert sys.argv[1] == 'parser'
 assert sys.argv[3] == '--graph-file'
@@ -282,6 +357,7 @@ if mode == 'positions': g['positions'][0]['i'] = 99
 if mode == 'offload': g['offloading'] = [{{'dm': {{'e': m}}}}]
 if mode == 'virtual': g['offloading'] = [{{'vm': {{'e': 0, 'v': 0}}}}]
 pathlib.Path(sys.argv[4]).write_text(json.dumps(g))
+STUB_PY
 ''')
         stub.chmod(0o755)
         return stub

@@ -61,6 +61,10 @@ real endpoints inside commit plus buffer. Insufficient buffers are rejected.
 After layer 0, residuals inside top commits or outside layer-1 coverage fail
 before layer 1 runs. A single fully committed full-graph window is supported. Ambiguous
 ownership, uncovered detectors and unmatched residual syndromes are errors.
+Every global edge must have exactly one owner: incident edges for top commits,
+and the full cut graph for bottom windows. Missing owned edges in a cut graph,
+unowned edges between closed bottom windows, and conflicting owners are rejected
+before decoding.
 
 ## Rust output
 
