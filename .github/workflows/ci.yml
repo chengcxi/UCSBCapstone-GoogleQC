@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify example window plans are included in the checkout
         run: |
-          for plan in examples/windows.json examples/parallel_window_windows.json examples/tiny-windows.json examples/seam-shots.json; do
+          for plan in examples/windows.json examples/parallel_window_windows.json examples/tiny-windows.json examples/seam-shots.json examples/alternating-windows.json examples/alternating-shots.json; do
             if ! git ls-files --error-unmatch "$plan" >/dev/null 2>&1 || ! test -f "$plan"; then
               echo "::error::$plan is missing. Commit the plan file (check the *.json ignore rule)."
               exit 1
