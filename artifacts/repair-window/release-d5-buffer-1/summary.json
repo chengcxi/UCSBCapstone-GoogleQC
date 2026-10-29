@@ -1,0 +1,60 @@
+{
+  "git_revision": "feddf57125ee911c200ccf0037e5fdec02dc711a",
+  "binary_sha256": "d4dfcc7422ab934ac998ec28e1f9e8432cebc2c75e8715054cd40adde0babd05",
+  "runner_sha256": "cbe57d4c900de11e40f082458e3a9b86131549581a0d33dc0ab19f8ba2189b41",
+  "working_tree_diff_sha256": "66ad35841a10a6857261c9cc7a225abf3a56a515445c417552eaf2a311180bb2",
+  "host_patch": "std-only printing fallback in blossom-nostd/src/util.rs; decoding logic unchanged",
+  "stim_version": "1.15.0",
+  "python_version": "3.14.7 (main, Aug  5 2026, 10:29:49) [Clang 21.0.0 (clang-2100.1.1.101)]",
+  "reference_fusion_blossom_version": "0.2.13",
+  "distance": 5,
+  "rounds": 29,
+  "noise_probability_each_channel": 0.003,
+  "basis": "z",
+  "shots": 1000,
+  "seed": 20261027,
+  "circuit_qubits": 64,
+  "independent_shot_batch_workers": 2,
+  "shots_per_batch": 100,
+  "detectors": 696,
+  "edges": 3190,
+  "time_slices": 30,
+  "top_windows": 3,
+  "bottom_windows": 3,
+  "commit_slices": 5,
+  "buffer_slices_each_side": 1,
+  "correlated_components_approximated": true,
+  "window": {
+    "accuracy": 0.977,
+    "accuracy_95pct_wilson": [
+      0.9657235493377733,
+      0.9846257230670071
+    ],
+    "rejected_shots": 0,
+    "logical_failures_among_accepted": 23,
+    "nonempty_residuals_among_accepted": 0,
+    "accepted_shots": 1000,
+    "unsuccessful_shots": 23,
+    "unsuccessful_fraction": 0.023
+  },
+  "full_graph_fusion_blossom": {
+    "logical_failures": 20,
+    "logical_error_rate": 0.02,
+    "accuracy": 0.98,
+    "accuracy_95pct_wilson": [
+      0.9693099947702822,
+      0.987016317083585
+    ],
+    "nonempty_residuals": 0
+  },
+  "prediction_disagreements_among_accepted": 7,
+  "window_only_failures": 5,
+  "reference_only_failures": 2,
+  "timings_seconds": {
+    "compile": 1.3088385830051266,
+    "window_initialization_decode_verify_serialize": 64.76378774998011,
+    "reference_solve_and_python_parity": 0.31997283300734125
+  },
+  "timing_note": "Different measured scopes; not a decoder speed comparison or FPGA measurement.",
+  "accuracy_definition": "Fraction of all shots returning a valid correction and all logical observables correct; rejected shots count as unsuccessful."
+}

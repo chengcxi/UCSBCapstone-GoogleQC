@@ -2,7 +2,6 @@ use crate::binding::*;
 use crate::defects_reader::*;
 use crate::dual_driver::*;
 use crate::util::*;
-use core::cell::UnsafeCell;
 use core::hint::black_box;
 use include_bytes_plus::include_bytes;
 use konst::{option, primitive::parse_usize, result::unwrap_ctx};
@@ -30,7 +29,7 @@ make -C ../../fpga/Xilinx/VMK180_Micro_Blossom run_a72
 
 // guarantees decoding up to d=39
 pub const MAX_NODE_NUM: usize = unwrap_ctx!(parse_usize(option::unwrap_or!(option_env!("MAX_NODE_NUM"), "65536")));
-pub const DEFECTS: &'static [u32] = &include_bytes!("./embedded.defects" as u32le);
+pub const DEFECTS: &'static [u32] = &include!(concat!(env!("OUT_DIR"), "/embedded_defects.rs"));
 
 /// by default using batch decoding
 pub const USE_LAYER_FUSION: bool = option_env!("USE_LAYER_FUSION").is_some();
@@ -46,11 +45,11 @@ pub const MAX_ROUND: usize = unwrap_ctx!(parse_usize(option::unwrap_or!(option_e
 /// disabling the detail print will significantly speed up the process
 pub const DISABLE_DETAIL_PRINT: bool = option_env!("DISABLE_DETAIL_PRINT").is_some();
 
-static mut PRIMAL_MODULE: UnsafeCell<PrimalModuleEmbedded<MAX_NODE_NUM>> = UnsafeCell::new(PrimalModuleEmbedded::new());
-static mut DUAL_MODULE: UnsafeCell<DualModuleStackless<DualDriverTracked<DualDriver, MAX_NODE_NUM>>> =
-    UnsafeCell::new(DualModuleStackless::new(DualDriverTracked::new(DualDriver::new())));
-static mut LATENCY_BENCHMARKER: UnsafeCell<LatencyBenchmarker> = UnsafeCell::new(LatencyBenchmarker::new_default());
-static mut CPU_WALL_BENCHMARKER: UnsafeCell<LatencyBenchmarker> = UnsafeCell::new(LatencyBenchmarker::new_default());
+static mut PRIMAL_MODULE: PrimalModuleEmbedded<MAX_NODE_NUM> = PrimalModuleEmbedded::new();
+static mut DUAL_MODULE: DualModuleStackless<DualDriverTracked<DualDriver, MAX_NODE_NUM>> =
+    DualModuleStackless::new(DualDriverTracked::new(DualDriver::new()));
+static mut LATENCY_BENCHMARKER: LatencyBenchmarker = LatencyBenchmarker::new_default();
+static mut CPU_WALL_BENCHMARKER: LatencyBenchmarker = LatencyBenchmarker::new_default();
 
 pub fn main() {
     // first print all the configurations for trace
@@ -88,10 +87,12 @@ pub fn main() {
 
     // create primal and dual modules
     let context_id = 0;
-    let primal_module = unsafe { PRIMAL_MODULE.get().as_mut().unwrap() };
+    // SAFETY: this benchmark runs once on a single core and exclusively owns these statics.
+    // Obtain raw pointers first so no references to `static mut` are formed implicitly.
+    let primal_module = unsafe { &mut *core::ptr::addr_of_mut!(PRIMAL_MODULE) };
     // adapt bit width of primal module so that node index will not overflow
     primal_module.nodes.blossom_begin = (1 << hardware_info.vertex_bits) / 2;
-    let dual_module = unsafe { DUAL_MODULE.get().as_mut().unwrap() };
+    let dual_module = unsafe { &mut *core::ptr::addr_of_mut!(DUAL_MODULE) };
     dual_module.driver.driver.context_id = context_id;
     let mut defects_reader = DefectsReader::new(DEFECTS);
     // calculate useful constant across the evaluations
@@ -105,8 +106,8 @@ pub fn main() {
     // optional: test whether the fast timer aligns with the native timer
     // test_fast_timer();
 
-    let latency_benchmarker = unsafe { LATENCY_BENCHMARKER.get().as_mut().unwrap() };
-    let cpu_wall_benchmarker = unsafe { CPU_WALL_BENCHMARKER.get().as_mut().unwrap() };
+    let latency_benchmarker = unsafe { &mut *core::ptr::addr_of_mut!(LATENCY_BENCHMARKER) };
+    let cpu_wall_benchmarker = unsafe { &mut *core::ptr::addr_of_mut!(CPU_WALL_BENCHMARKER) };
     let all_begin_native_time = unsafe { extern_c::get_native_time() };
     let mut last_native_time = unsafe { extern_c::get_native_time() };
     while let Some(defects) = defects_reader.next() {

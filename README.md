@@ -1,104 +1,306 @@
-# UCSBCapstone-GoogleQC
-# Micro Blossom
+# Micro Blossom parallel-window toolchain
 
-A highly configurable hardware-accelerated Minimum-Weight Perfect Matching (MWPM) decoder for Quantum Error Correction (QEC).
+Compile Stim circuits and detector error models into graph inputs for
+[Micro Blossom](https://github.com/shsym/micro-blossom). With an explicit
+window plan and syndrome shots, the CLI now runs the two-layer CPU decoder and
+publishes verified corrections. Window-aware FPGA generation remains future work.
 
-Paper coming soon!!! Stay tuned!!!
+**Status:** The project targets **Rust 1.99.0 / edition 2024**. CI runs Rust
+formatting, tests, docs and Clippy, the Python/Stim end-to-end decoding tests,
+and an installed-binary smoke test on Rust 1.99. The CPU-only window path is
+implemented; concurrent FPGA window decoding is not. Full Micro Blossom
+hardware-JSON generation has an optional parser handoff and test, but the
+upstream parser build is not part of the default CI run.
 
-Micro Blossom is a heterogeneous architecture that solves **exact** MWPM decoding problem in sub-microsecond latency by
-taking advantage of vertex and edge-level fine-grained hardware acceleration.
-At the heart of Micro Blossom is an algorithm (equivalent to the original blossom algorithm) specifically optimized for resource-efficient RTL (register transfer level) implementation, with compact combinational logic and pipeline design.
-Given an arbitrary decoding graph, Micro Blossom automatically generates a hardware implementation (either Verilog or VHDL depending on your needs).
-The architecture of Micro Blossom is shown below:
+**Parallel window decoding (Sprint 2, CPU):** Implemented.  The CPU decoder in
+`src/cpu/blossom/src/parallel_window.rs` and the oracle in
+`src/cpu/blossom-nostd/src/window_oracle.rs` realise the two-layer scheme
+from [Skoric *et al.* 2209.08552](https://arxiv.org/abs/2209.08552) and
+[Tan *et al.* 2209.09219](https://arxiv.org/abs/2209.09219): top-layer
+windows have open temporal boundaries, a commit region and buffers, and emit
+residual (artificial) syndromes on the seam; bottom-layer windows have
+closed boundaries and decode the residuals.  Both layers commit to a single
+global observable parity.  See `docs/PARALLEL_WINDOW.md`, the hand-worked
+Python prototype `parallel_window_prototype.py`, and the CPU Rust tests
+`cargo test --locked --manifest-path src/cpu/blossom/Cargo.toml --lib parallel_window`.
 
-![](./tutorial/src/img/architecture.png)
+**FPGA window generator (Sprints 3–4):** Marked TODO.  The toolchain's
+`src/window.rs` builds window-sized hardware graphs (the golden reference);
+the Scala generator `MicroBlossomBusGenerator` still needs a window-aware
+front-end (see `src/hardware.rs` notes).
 
-## Benchmark Highlights
+See [the feasibility review and sprint gates](docs/PLAN.md),
+[the data contract](docs/FORMAT.md), and [integration verification notes](docs/INTEGRATION.md).
 
-**Correctness**: Like Fusion Blossom, we have not only mathematically proven the optimality of the MWPM it generates, but also done massive correctness tests in cycle-accurate Verilog simulators under various conditions.
+## Scientific decoder workbench and CPU benchmark
 
-**14x latency reduction**: On a surface code of code distance $d=9$ and physical error rate of $p=0.001$ circuit-level noise model, we reduce the average
-latency from $5.1 \mu s$ using Parity Blossom on CPU (Apple M1 Max) to $367 ns$ using Micro Blossom on FPGA (VMK180), a 14x reduction in **latency**.
-Although [Sparse Blossom (PyMatching V2)](https://github.com/oscarhiggott/PyMatching) is generally faster than Parity Blossom, it still incurs $3.2 \mu s$ latency considering the $2.4 \mu s$ average CPU runtime (even with batch mode) and at least $0.8 \mu s$ CPU-hardware communication latency (PCIe round-trip-time) when using powerful CPUs (would be even higher when using Apple chips with thunderbolt). In practice, the CPU-hardware communication will incur even higher latency due to at least two transactions of CPU read (syndrome) and CPU write (correction).
-
-**Better effective error rate** than both Helios (hardware UF decoder, which runs faster but loses accuracy) and Parity Blossom (running on M1 Max) on various code distances $d$ and physical error rates $p$. It is only at very large code distances ($d \ge 13$) and physical error rates ($p \ge 0.005$) that Helios starts to outperform Micro Blossom. The higher complexity at high $d$ and $p$ is inherent to the optimality of the blossom algorithm though. As a side note, when trading accuracy for decoding speed, one could modify the software to seamlessly tune between UF and MWPM (see the [`max_tree_size` feature](https://github.com/yuewuo/fusion-blossom/issues/31) in the Fusion Blossom library) because [UF and MWPM decoders share the same mathematical foundation](https://arxiv.org/abs/2211.03288).
-
-**Better worst-case time complexity and thus smaller tail in latency distribution**: We observe an exponential tail of the latency distribution for Micro Blossom. The software implementation has similar behavior but it has a much longer tail in the distribution. Micro Blossom has a better latency distribution for two reasons. First, Micro Blossom has a better worst-case time complexity of $O(|V|^3)$ than Sparse Blossom's $O(|V|^4)$. (We also propose a design that further reduces latency to $O(|V|^2 \log |V|)$ when using more complicated/costly, but still viable, software and hardware designs.) Second, the memory footprint of Micro Blossom is much smaller than both Sparse Blossom and Parity Blossom due to the fact that the decoding graph is not stored in the CPU at all. The CPU only has an active memory region that scales with $O(p^2 |V|)$ (Yes!!! not $O(p|V|)$ which is the average number of defect vertices, but rather $O(p^2 |V|)$ because most of the defects are not even reported to the CPU and solely handled by the accelerator).
-
-Note that an improvement of latency is generally harder than an improvement of throughput because the latter can be achieved by
-increasing the number of cores using coarse-grained parallelism (see our [Fusion Blossom paper](https://arxiv.org/abs/2305.08307)) but the latency is bounded by how much the algorithm is sequential at its core. Given the complexity and sequential nature of the blossom
-algorithm, it was even believed in the community that hardware acceleration of exact MWPM decoding is impractical. Yet we re-design the algorithm
-to exploit the finest parallelism possible (vertex and edge parallelism) and achieve a significant reduction in latency.
-Note that this doesn't mean we are sacrificing the decoding throughput: in fact, thanks to the pipeline design, the hardware accelerator
-has a large decoding throughput capability that supports real-time decoding of at most 110 logical qubits ($d=9, p=0.001$) while achieving the throughput requirement of 1 million measurement
-rounds per second.
-While Micro Blossom does use more resources (152k LUT, 4-bit weighted circuit-level noise) than [Helios](https://github.com/NamiLiy/Helios_scalable_QEC) (94k LUT, unweighted circuit-level noise),
-the resource usage per logical qubit is 1.4k LUT, lower than the 2.1k LUT per logical qubit for Helios.
-This is due to the more efficient CPU-hardware collaboration of Micro Blossom where the hardware focuses on massive yet simple parallel computation while the
-CPU focuses on complicated yet rare computation.
-Note that Micro Blossom does require an additional CPU which is overall more expensive than Helios using pure FPGA, which is kind of expected due to the higher complexity of the blossom algorithm.
-
-![](./tutorial/src/img/benchmark.png)
-
-For people concerned about why we evaluate the average latency rather than worst-case latency: we believe only the average case matters for several reasons below. Note that when we evaluate the decoding latency distribution, we accumulate 1000 logical errors (2.5e8 samples in total) to make sure we capture the latencies with probability at or even below the logical error rate $p_L$. This doesn't change the average latency value by much though. For all other cases that only require average latency value, we just run 1e5 samples.
-
-- Adding "idle QEC cycle" support at the lowest control layer is not hard, and is favorable for various reasons beyond QEC decoding: for example, some logical feedforward branches may have longer execution paths and we should just let other idle logical qubits run their idle QEC cycles while waiting for a longer branch to run.
-- Mathematically, only average case matters. The ultimate goal is that the overall logical error rate of a quantum circuit (including the added idle time due to decoding latency and feedforward) is low. Let's calculate the overall logical error rate including the latency-induced idle errors: Suppose the latency distribution is $P(L)$, then $\int_0^\infty P(L) dL = 1$ and $\int_0^\infty P(L) L dL = \bar{L}$ (aka average latency). Let's calculate the overall logical error rate. $p_L = \int_0^\infty P(L) p_{L0} (1 + L/d) dL = p_{L0} (1 + \bar{L}/d)$. This argument can be extended to more complicated circuits as well, but the idea is pretty intuitive: logical error rate is also a statistical value that is linearly related to the latency.
-- It is difficult to scale up QEC decoding to distributed systems while meeting hard deadline requirements, even though there are existing decoders that achieve hard real-time for simple memory experiments at a very low physical error rate and code distance. We believe that in the long run when scaling up, all QEC decoding systems will face the problem of not being able to achieve a hard $1 \mu s$ deadline, but it doesn't matter that much according to the two points above.
-
-## Project Structure
-
-- src: source code
-  - fpga: the FPGA source code, including generator scripts
-    - microblossom: Scala code for MicroBlossom module using SpinalHDL library
-    - Xilinx: Xilinx project build scripts
-  - cpu: the CPU source code
-    - blossom: code for development and testing on a host machine
-    - blossom-nostd: nostd code that is designed to run in an embedded environment but can also run in OS
-    - embedded: build binary for embedded system
-- benchmark: evaluation results that can be reproduced using the scripts included (and VMK180 Xilinx evaluation board)
-  - behavior: CPU simulation, with exactly the same RTL logic
-  - hardware: evaluation of hardware
-    - bram_speed: understand the CPU-FPGA communication cost under various clock frequencies
-    - decoding_speed: evaluate the decoding latency under various conditions and its distribution on real VMK180 hardware
-    - resource_estimate: post-implementation resource usage
-
-
-## Usage
-
-Micro Blossom consists of two parts: the CPU program in Rust and the FPGA program in Scala.
-The FPGA part has a CLI program that generates Verilog/VHDL files given a decoding graph input.
-The decoding graph input is defined by a JSON format in `src/fpga/microblossom/utils/SingleGraph.scala`.
-A few examples of how to generate and use this decoding graph are below
+The [CPU workbench](demo/README.md) uses a minimal MATLAB-like interface. Its
+Decoder tab walks through real Stim → Rust artifacts on **one global detector
+graph**, with top/open and bottom/closed window membership overlaid on the same
+IDs. The saved CLI captures include real sampled or supplied shots. Run locally:
 
 ```sh
-# 1. generate example graphs in ./resources/graphs/*.json
-cd src/cpu/blossom
-cargo run --release --bin generate_example_graphs
-cd ..
-# (if you want to use the visualization tool to see these graphs, check src/cpu/blossom/bin/generate_example_graphs.rs)
-
-# 2. use one graph to generate a Verilog
-# you need to install Java and sbt build tool first, check:
-# https://spinalhdl.github.io/SpinalDoc-RTD/master/SpinalHDL/Getting%20Started/Install%20and%20setup.html
-mkdir gen
-sbt "runMain microblossom.MicroBlossomBusGenerator --graph ./resources/graphs/example_code_capacity_d3.json"
-# (for a complete list of supported arguments, sbt "runMain microblossom.MicroBlossomBusGenerator --help"
-# this command generates Verilog file at `./gen/MicroBlossomBus.v` with a default AXI4 interface.
+cd demo
+npm ci
+npm run dev
 ```
 
-The generated Verilog can be used either in simulation (see test cases in `src/cpu/blossom/src/dual_module_axi4.rs` and `benchmark/behavior/tests/run.py`) or real hardware evaluation (see test cases in `benchmark/hardware/tests/run.py` which runs the same behavior tests but on real FPGA hardware).
-
-The benchmark scripts automate this process of generating the graphs, Verilog, and the Xilinx project.
-For any questions about how to use the project, please [email me](mailto:wuyue16pku@gmail.com).
-
-
-### Docker
-
-It is recommended to use the docker file to create an environment.
+The Benchmark tab compares the **single global Micro Blossom CPU solver** to the
+current **sequential two-layer CPU window decoder** on the same shots. Its
+seam view includes an *actual* release-binary measurement from [CI run
+40595098673](https://github.com/chengcxi/microblossom-parallelism/actions/runs/40595098673);
+it is an illustrative small-graph sample on a shared runner, not a performance
+claim. Build the Rust binary to measure locally or import a report generated by
+this CLI. For a reproducible supplied-shot example:
 
 ```sh
-docker build --tag 'micro-blossom' .
-docker run -itd --name 'mb' -v .:/root/micro-blossom 'micro-blossom'
-docker exec -it mb bash  # into the bash environment
+mkdir -p artifacts
+cargo run --release --locked -- benchmark demo/public/fixtures/seam.ir.json \
+  --shots examples/seam-shots.json --warmup 2 --repeats 20 \
+  --output artifacts/seam.benchmark.json
 ```
+
+The JSON report contains raw nanosecond samples, median/p95/mean, correction
+parity and **exact logical-prediction accuracy** for all and nonempty shots,
+plus build profile and host information. Accuracy is `correct / total` among
+shots with ground-truth observable labels (including an empty flip set), counted
+once per input shot (not per timing repeat); it is `null`/N/A without truth. A
+zero global syndrome residual checks correction validity, **not** logical
+accuracy. Tiny supplied-shot sets do not establish a general logical error rate.
+
+Decoder calls are timed per shot: solver construction, solving and subgraph
+extraction, plus window-local routing and stitching in the window path. Stim,
+graph preparation, *external* parity verification and file I/O are not. The
+FPGA parallel-window scheduler is **not implemented or measured**. A CPU ratio
+must not be read as a projection of FPGA performance. See [the workbench guide](demo/README.md) for
+the seeded Stim example, report import and repeatable measurement protocol.
+
+## Setup
+
+Requires Python 3.11+ and Rust 1.99.0 (pinned in `rust-toolchain.toml`). With rustup
+installed, Cargo selects the pinned toolchain automatically. `Cargo.lock` is tracked;
+use `--locked` for reproducible dependency resolution.
+
+```sh
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+cargo build --locked
+```
+
+Use `requirements.txt` instead if you only need compilation and CPU window
+decoding, not Python reference-decoder tests. The Python `fusion-blossom`
+package is a test dependency; the Rust binary now links the existing
+`micro-blossom` CPU decoder and its Rust Fusion Blossom dependency.
+
+## One-command circuit → graph compilation
+
+```sh
+cargo run --locked -- compile examples/tiny.stim \
+  --output artifacts/tiny --python .venv/bin/python
+```
+
+The Rust CLI embeds the Python/Stim bridge, invokes it without a shell, validates
+its IR, converts the graph and writes:
+
+- `tiny.ir.json`: normalized DEM, full detector coordinates, observable labels,
+  grouped correlated components, input hash and Stim version.
+- `tiny.graph.json`: initializer, visualization positions and index-aligned edge metadata.
+- `tiny.syndromes`: graph-only **Syndrome Pattern v1.0** parser input; no syndrome
+  shots are fabricated by default. This is **not** the final Micro Blossom hardware JSON.
+
+With a window plan, `PREFIX.windows.json` also holds the cut local graphs and
+index maps. Add `--shots` or `--sample-shots` to decode real supplied or sampled
+syndromes into `PREFIX.corrections.json`.
+
+Output directories are created automatically. `--python` accepts an executable
+path/name; alternatively set `MICROBLOSSOM_PYTHON`. Default: `python3`.
+
+```sh
+# Existing DEM input with explicit window annotations:
+cargo run --locked -- compile examples/seam.dem --kind dem \
+  --windows examples/windows.json --output artifacts/seam --python .venv/bin/python
+
+# Pure Rust conversion of an existing normalized IR (does not invoke Python):
+cargo run --locked -- export artifacts/tiny.ir.json --output artifacts/reexport
+
+# Optional installation; the resulting binary does not need the checkout:
+cargo install --locked --path .
+microblossom-toolchain --help
+```
+
+The JSON files under `examples/` are **input fixtures**, not generated outputs.
+When copying this toolchain into another repository, commit the strict window
+plans (`windows.json`, `tiny-windows.json`), the illustrative
+`parallel_window_windows.json` and `seam-shots.json`. If a destination ignores
+`*.json`, add exceptions or stage these fixtures with `git add -f`.
+
+The legacy `cargo run --locked -- INPUT.ir.json PREFIX [--allow-correlated]` syntax
+also works. To save Stim's textual DEM separately, use the lower-level bridge:
+
+```sh
+python tools/stim_export.py examples/tiny.stim \
+  --output artifacts/tiny.ir.json --dem-output artifacts/tiny.dem
+```
+
+## Micro Blossom parser handoff
+
+After building an upstream `micro_blossom` executable:
+
+```sh
+cargo run --locked -- compile examples/tiny.stim \
+  --output artifacts/tiny --python .venv/bin/python \
+  --micro-blossom /absolute/path/to/micro_blossom
+```
+
+The CLI runs upstream `parser INPUT --graph-file OUTPUT` to derive communication
+trees and hardware metadata, then writes `tiny.hardware.json`. It rejects output
+that changes vertex IDs, edge ordering, weights or virtual boundaries, because
+those changes would invalidate the observable sidecar. It also checks communication-tree structure, positions, growth-vector dimensions
+and offloader references. These are structural checks, **not** proof of valid growth
+bounds/offloading behavior, hardware timing, or all derived metadata.
+
+Keep `.graph.json` alongside the hardware graph: the upstream parser input does not
+carry logical-observable labels. Predictions require the selected correction edges
+and their labels. Conversion/parser failures leave previous outputs intact; staging
+files are cleaned up. Publication uses per-file renames, not an all-files transaction.
+An invocation without `--micro-blossom` does not refresh an existing hardware file.
+
+See [integration notes](docs/INTEGRATION.md) for the pinned upstream revision and
+optional real-parser test. CI also offers a manually dispatched upstream build job;
+that job has not yet been verified.
+
+## Window annotations
+
+The annotation plan explicitly lists detector IDs for each window's `commit` and
+`buffer` regions. Layer 0 is labeled temporally open; layer 1 is labeled temporally
+closed. Seam and outer-crossing components are identified by source indices. Rust revalidates
+these references even when importing IR directly, rejects conflicting boundary
+labels and forbids overlapping commit regions within the same layer. Buffers and
+cross-layer membership may overlap.
+
+**Sprint 1:** annotations were validated but did not modify graph connectivity.
+**Sprint 2:** window graph construction (copying vertices/edges by `t`,
+duplicating spatial virtuals, synthesising temporal virtuals for open windows)
+and the residual/observable oracle are implemented in `src/window.rs` (toolchain
+golden reference) and `src/cpu/blossom-nostd/src/window_oracle.rs`
+(residual `S ⊕ ∂(E_committed)` and global `⊕ obs(e)`).  Physical code
+boundaries are distinct from artificial temporal window boundaries; both layers
+preserve the former.
+
+Run the hand-worked prototype without a Rust toolchain:
+
+```sh
+python3 parallel_window_prototype.py
+python -m unittest tests.test_parallel_window -v
+```
+
+Cut the graph into local open/closed windows and decode **actual** syndromes:
+
+```sh
+# Supplied DEM shots: global detector IDs and optional measured observables.
+cargo run --locked -- compile examples/seam.dem --kind dem \
+  --windows examples/windows.json --shots examples/seam-shots.json \
+  --output artifacts/seam --python .venv/bin/python
+
+# Or sample a Stim circuit reproducibly in the embedded Python bridge.
+cargo run --locked -- compile examples/tiny.stim \
+  --windows examples/tiny-windows.json --sample-shots 24 --seed 7 \
+  --output artifacts/tiny-windowed --python .venv/bin/python
+
+# Re-decode saved annotated IR and supplied shots without Python/Stim.
+cargo run --locked -- export artifacts/seam.ir.json \
+  --shots examples/seam-shots.json --output artifacts/seam-redecoded
+```
+
+`--windows` always calls `build_window_graphs` and writes `PREFIX.windows.json`
+(local `initializer`, `positions`, `detector_map`, `edge_map` and observable
+sidecars). It does **not** invent a syndrome: decoding and
+`PREFIX.corrections.json` require `--shots` or `--sample-shots`. The latter
+supports circuit and DEM input; both sources retain real Stim observable flips.
+No upstream `micro_blossom` executable or FPGA is needed for the CPU path.
+
+`--shots` expects `{"shots":[{"defects":[0,2],"observables":[0]}]}`. The
+`observables` field is optional; when present it is compared with the decoded
+`predicted_observables` to set `logical_error`. Correction edges refer to the
+**global** `.graph.json` indices. Each shot also records a verified empty
+`residual_syndrome`; unsolvable shots or incomplete window schedules fail before
+publishing outputs. For decoding, every detector needs a time coordinate,
+windows must cover complete contiguous time slices, and every detector must
+belong to exactly one commit across both layers. A top window owns every edge
+incident to its commit detectors, including edges into either buffer; its buffer
+must include every real neighbour of those detectors. Buffer-only and rewired
+outer-cut edges remain tentative. Bottom windows own their full closed graphs.
+Every global edge must have exactly one commit owner; plans with missing buffer
+coverage, unowned edges or conflicting owners fail before decoding.
+The CPU window loop is sequential
+(today's *software* end-to-end path, not hardware parallelism).
+
+The three-window regression example exercises both A0→B0 and B0→A1 seams,
+including an artificial event passed from A1's earlier buffer to B0:
+
+```sh
+cargo run --locked -- compile examples/alternating-seam.dem --kind dem \
+  --windows examples/alternating-windows.json --shots examples/alternating-shots.json \
+  --output artifacts/alternating --python .venv/bin/python
+```
+
+`examples/parallel_window_windows.json` illustrates a richer window description,
+but its extra keys are not accepted by the strict `--windows` input loader.
+See [architecture diagrams](tutorial/README.md) and
+[the parallel-window scheme](docs/PARALLEL_WINDOW.md) for the full geometry.
+
+## Supported conversion subset
+
+- Deterministic-detector circuits whose DEM extraction succeeds without gauge or
+  disjoint-error relaxation; existing DEM files can also be imported.
+- Nonzero mechanisms with one or two detectors, probability at most 0.5.
+- One-detector mechanisms become edges to an explicit physical virtual vertex.
+- Independent duplicate mechanisms with identical detector **and observable** support
+  merge using `p + q - 2pq`. Conflicting logical labels on parallel edges are rejected.
+- Weights are even integers: `2 * round(scale * ln((1-p)/p) / 2)`, with checked signed
+  32-bit bounds. Default scale: 100; change with `--weight-scale NUMBER`.
+  Zero-probability mechanisms are omitted; p=0.5 produces zero weight.
+  Finite resolution may also round small positive weights to zero; the CLI warns.
+  Log odds are computed as `ln_1p(-p) - ln(p)` to avoid overflow at tiny probabilities.
+
+The converter rejects hyperedges, undetectable logical faults, out-of-range IDs and
+unsupported probability ranges. Correlated `^` components are rejected by default.
+Pass `--allow-correlated` only to explicitly approximate them as independent graph
+edges; the output records the approximation and the CLI emits a warning.
+This is not a correlation-aware decoder and may change logical error performance.
+
+## Check correction parity
+
+Given `shot.json` containing `{"defects": [0], "edges": [0]}`:
+
+```sh
+cargo run --locked -- check-correction artifacts/tiny.ir.json shot.json
+```
+
+This reports the correction's detector boundary, observable flips, and the residual
+`input syndrome XOR correction boundary`. Repeated edge selections cancel by XOR;
+invalid edge/defect IDs and duplicate input defects are rejected. A nonempty
+residual produces exit status 1. Use `--allow-correlated` when the IR needs that
+explicit conversion policy. This algebraic check neither chooses an MWPM correction
+nor implements the two-layer **seam** residual algorithm. Edge IDs must refer to
+this compiler's deterministic graph ordering, not an arbitrary decoder graph.
+
+## Tests
+
+```sh
+cargo fmt --check
+cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
+RUN_RUST_TESTS=1 .venv/bin/python -m unittest discover -s tests -v
+```
+
+See [Rust 1.99 migration notes](docs/RUST_1_99.md) for the changes and exact
+verification limitations. The Python suite includes Rust CLI tests, native Fusion Blossom loading, 128 tiny
+circuit logical-prediction checks, and correction-syndrome checks on 64 distance-3
+memory samples. A stub parser tests subprocess/error handling only; it is not
+presented as a real hardware-graph validation. The full upstream test is enabled
+separately with `MICROBLOSSOM_BINARY`.
+
+Generated artifacts, virtual environments and proprietary data must not be
+committed. `artifacts/` and Rust build outputs are ignored.

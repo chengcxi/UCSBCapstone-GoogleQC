@@ -1,0 +1,160 @@
+name: Sprint 1 toolchain
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      upstream:
+        description: Build the pinned Micro Blossom parser and test hardware graph export
+        type: boolean
+        default: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify example window plans are included in the checkout
+        run: |
+          for plan in examples/windows.json examples/parallel_window_windows.json examples/tiny-windows.json examples/seam-shots.json examples/alternating-windows.json examples/alternating-shots.json; do
+            if ! git ls-files --error-unmatch "$plan" >/dev/null 2>&1 || ! test -f "$plan"; then
+              echo "::error::$plan is missing. Commit the plan file (check the *.json ignore rule)."
+              exit 1
+            fi
+          done
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: dtolnay/rust-toolchain@1.99.0
+        with:
+          components: rustfmt, clippy
+      - run: rustc --version --verbose && cargo --version
+      - run: python -m pip install -r requirements-dev.txt
+      - name: Rust formatting
+        shell: bash
+        run: |
+          cargo fmt --check || {
+            python .github/scripts/annotate_fmt_failure.py
+            exit 1
+          }
+      - name: Rust tests
+        shell: bash
+        run: |
+          set -o pipefail
+          CARGO_TERM_COLOR=never cargo test --locked 2>&1 | tee /tmp/microblossom-rust-tests.log || {
+            # Annotations remain available via the Checks API even when a
+            # runner's raw log host is inaccessible to a downstream client.
+            python .github/scripts/annotate_cargo_failure.py 'Rust tests' /tmp/microblossom-rust-tests.log
+            exit 1
+          }
+      - run: cargo doc --locked --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Rust clippy
+        shell: bash
+        run: |
+          set -o pipefail
+          CARGO_TERM_COLOR=never cargo clippy --locked --all-targets -- -D warnings 2>&1 | tee /tmp/microblossom-clippy.log || {
+            python .github/scripts/annotate_cargo_failure.py 'Rust clippy' /tmp/microblossom-clippy.log
+            exit 1
+          }
+      - run: python -m unittest discover -s tests -v
+        env:
+          RUN_RUST_TESTS: '1'
+      - name: Verify captured visual demo against a fresh Rust CLI run
+        run: |
+          bash demo/scripts/capture.sh artifacts/demo-captures
+          for name in tiny seam; do
+            for suffix in ir.json graph.json windows.json corrections.json syndromes; do
+              cmp "artifacts/demo-captures/$name.$suffix" "demo/public/fixtures/$name.$suffix"
+            done
+          done
+      - run: cargo install --locked --path . --root artifacts/install
+      - name: Measure CPU global vs sequential window (release, seam example)
+        run: |
+          mkdir -p artifacts/benchmark
+          artifacts/install/bin/microblossom-toolchain benchmark demo/public/fixtures/seam.ir.json \
+            --shots examples/seam-shots.json --warmup 2 --repeats 20 \
+            --output artifacts/benchmark/seam-ci.json
+          python .github/scripts/annotate_benchmark_capture.py artifacts/benchmark/seam-ci.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpu-benchmark-seam
+          path: artifacts/benchmark/seam-ci.json
+          if-no-files-found: error
+      - name: Smoke-test installed binary outside checkout
+        run: |
+          cd "$RUNNER_TEMP"
+          "$GITHUB_WORKSPACE/artifacts/install/bin/microblossom-toolchain" compile \
+            "$GITHUB_WORKSPACE/examples/tiny.stim" --output "$RUNNER_TEMP/tiny"
+
+  cpu:
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D non_local_definitions -D static_mut_refs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - name: Build CPU decoder on stable (including embedded benchmark mains)
+        # Run from the repo root so the nested nightly toolchain file does not override stable.
+        run: cargo build --release --locked --manifest-path src/cpu/blossom/Cargo.toml --bin micro_blossom
+      - name: Verify standalone CPU lockfiles
+        run: |
+          cargo metadata --locked --no-deps --format-version 1 --manifest-path src/cpu/blossom-nostd/Cargo.toml > /dev/null
+          cargo metadata --locked --no-deps --format-version 1 --manifest-path src/cpu/embedded/Cargo.toml > /dev/null
+      - name: Test parallel-window decoder
+        shell: bash
+        run: |
+          set -o pipefail
+          CARGO_TERM_COLOR=never cargo test --release --locked --manifest-path src/cpu/blossom/Cargo.toml --lib parallel_window -- --nocapture 2>&1 | tee /tmp/microblossom-window-tests.log || {
+            python3 .github/scripts/annotate_cargo_failure.py 'Parallel-window CPU tests' /tmp/microblossom-window-tests.log
+            exit 1
+          }
+
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: demo/package-lock.json
+      - run: npm ci
+        working-directory: demo
+      - run: npm test
+        working-directory: demo
+      - name: Build visual demo with check annotations on failure
+        working-directory: demo
+        shell: bash
+        run: |
+          node --version && npm --version
+          set -o pipefail
+          npm run build 2>&1 | tee /tmp/microblossom-demo-build.log || {
+            python -c 'from pathlib import Path; s=Path("/tmp/microblossom-demo-build.log").read_text(errors="replace")[-3500:]; print("::error title=Visual demo build::" + s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"))'
+            exit 1
+          }
+
+  upstream:
+    if: github.event_name == 'workflow_dispatch' && inputs.upstream
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: shsym/micro-blossom
+          ref: 3dd1817eecdb4bf9899433108d9a2edccf198c8e
+          path: artifacts/micro-blossom
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - run: rustc --version --verbose && cargo --version
+      - run: python -m pip install -r requirements-dev.txt
+      - name: Build upstream CPU parser
+        run: cargo build --release --locked --manifest-path artifacts/micro-blossom/src/cpu/blossom/Cargo.toml --bin micro_blossom
+      - name: Run pipeline including upstream hardware parser
+        run: python -m unittest discover -s tests -v
+        env:
+          RUN_RUST_TESTS: '1'
+          MICROBLOSSOM_BINARY: ${{ github.workspace }}/artifacts/micro-blossom/src/cpu/blossom/target/release/micro_blossom

@@ -244,6 +244,10 @@ pub mod c_printer {
     }
 
     pub fn print_string(s: &str) {
+        // Host builds do not provide the embedded C runtime's print_char.
+        #[cfg(feature = "std")]
+        std::print!("{}", s);
+        #[cfg(not(feature = "std"))]
         for c in s.chars() {
             unsafe { print_char(c as c_char) };
         }

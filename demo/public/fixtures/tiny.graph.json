@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "num_detectors": 2,
+  "num_observables": 1,
+  "detector_coordinates": [
+    [
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "initializer": {
+    "vertex_num": 3,
+    "weighted_edges": [
+      [
+        0,
+        2,
+        220
+      ],
+      [
+        1,
+        2,
+        138
+      ]
+    ],
+    "virtual_vertices": [
+      2
+    ]
+  },
+  "positions": [
+    {
+      "i": 0.0,
+      "j": 0.0,
+      "t": 0.0
+    },
+    {
+      "i": 0.0,
+      "j": 0.0,
+      "t": 1.0
+    },
+    {
+      "i": 0.0,
+      "j": 0.0,
+      "t": 0.0
+    }
+  ],
+  "edge_metadata": [
+    {
+      "detectors": [
+        0
+      ],
+      "observables": [
+        0
+      ],
+      "probability": 0.1,
+      "sources": [
+        [
+          0,
+          0
+        ]
+      ]
+    },
+    {
+      "detectors": [
+        1
+      ],
+      "observables": [
+        0
+      ],
+      "probability": 0.2,
+      "sources": [
+        [
+          1,
+          0
+        ]
+      ]
+    }
+  ],
+  "weight_scale": 100.0,
+  "correlated_components_approximated": false,
+  "provenance": {
+    "stim_version": "1.15.0",
+    "input_kind": "circuit",
+    "input_sha256": "8b9530607e7296811302ef45e87b1056703f7151195635552252b63764f0fad5"
+  },
+  "window_annotations": {
+    "schema_version": 1,
+    "annotation_only": true,
+    "windows": [
+      {
+        "id": "top-0",
+        "layer": 0,
+        "commit": [
+          0
+        ],
+        "buffer": [
+          1
+        ],
+        "temporal_boundary": "open",
+        "commit_buffer_seams": [],
+        "outer_crossings": []
+      },
+      {
+        "id": "bottom-0",
+        "layer": 1,
+        "commit": [
+          1
+        ],
+        "buffer": [],
+        "temporal_boundary": "closed",
+        "commit_buffer_seams": [],
+        "outer_crossings": []
+      }
+    ]
+  }
+}

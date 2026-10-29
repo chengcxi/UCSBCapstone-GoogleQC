@@ -1,0 +1,22 @@
+[package]
+name = "microblossom-toolchain"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Use the existing CPU two-layer decoder, rather than a second solver or a
+# subprocess that would not work in an installed toolchain binary.
+micro-blossom = { path = "src/cpu/blossom" }
+fusion-blossom = { version = "0.2.12", default-features = false }
+
+# The nested CPU crate's patch is ignored when it is used as a dependency.
+# Keep its stable-Rust qecp variant here as well.
+[patch.crates-io]
+qecp = { path = "src/cpu/blossom/vendor/qecp" }
+
+[lints.rust]
+unsafe_code = "forbid"

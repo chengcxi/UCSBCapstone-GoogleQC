@@ -49,8 +49,8 @@ weak-table = "0.3.2"
 rand = "0.8.5"
 lazy_static = "1.4.0"
 petgraph = "0.6.4"
-qecp = { version = "0.2.7" }
-fusion-blossom = { version = "0.2.12" }
+qecp = "0.2.7"
+fusion-blossom = { version = "0.2.12", default-features = false }
 micro-blossom-nostd = { path = "../blossom-nostd", features = [
     "std",
     "obstacle_potentially_outdated",
@@ -73,3 +73,9 @@ tmp_env = "0.1.1"
 stacker = "0.1.15"
 strum = "0.26"
 strum_macros = "0.26"
+
+# qecp's default decoder_fusion API is needed by MicroBlossom. The published
+# qecp 0.2.7 forces fusion-blossom/dangerous_pointer (nightly-only), so use the
+# upstream source with that optimization disabled; see vendor/qecp/PATCHES.md.
+[patch.crates-io]
+qecp = { path = "vendor/qecp" }

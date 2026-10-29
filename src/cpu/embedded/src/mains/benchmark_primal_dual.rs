@@ -1,7 +1,6 @@
 use crate::binding::*;
 use crate::dual_driver::*;
 use crate::util::*;
-use core::cell::UnsafeCell;
 use core::hint::black_box;
 use konst::{option, primitive::parse_usize, result::unwrap_ctx};
 use micro_blossom_nostd::dual_driver_tracked::*;
@@ -23,9 +22,9 @@ make -C ../../fpga/Xilinx/VMK180_Micro_Blossom run_a72
 // guarantees decoding up to d=39
 pub const MAX_NODE_NUM: usize = unwrap_ctx!(parse_usize(option::unwrap_or!(option_env!("MAX_NODE_NUM"), "65536")));
 
-static mut PRIMAL_MODULE: UnsafeCell<PrimalModuleEmbedded<MAX_NODE_NUM>> = UnsafeCell::new(PrimalModuleEmbedded::new());
-static mut DUAL_MODULE: UnsafeCell<DualModuleStackless<DualDriverTracked<DualDriver, MAX_NODE_NUM>>> =
-    UnsafeCell::new(DualModuleStackless::new(DualDriverTracked::new(DualDriver::new())));
+static mut PRIMAL_MODULE: PrimalModuleEmbedded<MAX_NODE_NUM> = PrimalModuleEmbedded::new();
+static mut DUAL_MODULE: DualModuleStackless<DualDriverTracked<DualDriver, MAX_NODE_NUM>> =
+    DualModuleStackless::new(DualDriverTracked::new(DualDriver::new()));
 
 pub fn main() {
     // obtain hardware information
@@ -35,8 +34,10 @@ pub fn main() {
 
     // create primal and dual modules
     let context_id = 0;
-    let primal_module = unsafe { PRIMAL_MODULE.get().as_mut().unwrap() };
-    let dual_module = unsafe { DUAL_MODULE.get().as_mut().unwrap() };
+    // SAFETY: only this single-threaded benchmark accesses these statics, once per run.
+    // Raw pointers avoid forming references to `static mut` before the exclusive borrow.
+    let primal_module = unsafe { &mut *core::ptr::addr_of_mut!(PRIMAL_MODULE) };
+    let dual_module = unsafe { &mut *core::ptr::addr_of_mut!(DUAL_MODULE) };
     dual_module.driver.driver.context_id = context_id;
 
     primal_module.reset();

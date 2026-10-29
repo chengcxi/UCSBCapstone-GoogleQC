@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "num_detectors": 3,
+  "num_observables": 1,
+  "shots": [
+    {
+      "defects": [
+        0,
+        2
+      ],
+      "committed_edges": [
+        0,
+        1
+      ],
+      "predicted_observables": [
+        0
+      ],
+      "residual_syndrome": [],
+      "actual_observables": [
+        0
+      ],
+      "logical_error": false
+    },
+    {
+      "defects": [
+        0,
+        1
+      ],
+      "committed_edges": [
+        0
+      ],
+      "predicted_observables": [
+        0
+      ],
+      "residual_syndrome": [],
+      "actual_observables": [
+        0
+      ],
+      "logical_error": false
+    },
+    {
+      "defects": [
+        1,
+        2
+      ],
+      "committed_edges": [
+        1
+      ],
+      "predicted_observables": [],
+      "residual_syndrome": [],
+      "actual_observables": [],
+      "logical_error": false
+    },
+    {
+      "defects": [
+        2
+      ],
+      "committed_edges": [
+        2
+      ],
+      "predicted_observables": [],
+      "residual_syndrome": [],
+      "actual_observables": [],
+      "logical_error": false
+    },
+    {
+      "defects": [],
+      "committed_edges": [],
+      "predicted_observables": [],
+      "residual_syndrome": [],
+      "actual_observables": [],
+      "logical_error": false
+    }
+  ]
+}
