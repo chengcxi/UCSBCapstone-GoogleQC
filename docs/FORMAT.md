@@ -56,9 +56,16 @@ A one-detector DEM error has a physical boundary endpoint and is not automatical
 an artificial temporal cut. A closed layer-1 *temporal* boundary must not remove
 valid physical boundary edges. For shot decoding, the runtime requires complete,
 contiguous time slices with explicit `t` coordinates and coverage by commit
-regions. It dates two-detector edges by midpoint (one-detector physical boundary
-edges by their real detector) and never commits a rewired outer-cut edge. Ambiguous
-ownership, uncovered detectors and unmatched residual syndromes are errors.
+regions. A top window owns every edge incident to one of its commit detectors,
+including edges to its earlier and later buffers and physical boundary edges.
+All real endpoints of an owned edge must be inside that window; insufficient
+buffer coverage is an error. Edges entirely in buffers and rewired outer-cut
+edges are tentative only. Each bottom window owns all edges in its closed graph.
+Every global edge must have exactly one owner, so edges between separate bottom
+windows and edges claimed by two top commits are rejected before any shots run.
+Uncovered detectors (including experiment endpoints) and unmatched residual
+syndromes are errors. This detector-ID rule is distinct from the older
+programmatic `WindowSpec` API's time-midpoint commit rule.
 
 ## Rust output
 

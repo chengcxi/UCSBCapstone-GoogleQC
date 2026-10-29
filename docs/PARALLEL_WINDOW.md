@@ -39,6 +39,11 @@ It is the technical companion to the implementation in
 
 ## 2. Window geometry
 
+Sections 2–4 describe the original programmatic `WindowSpec` API and its
+time-midpoint rule. The CLI's explicit detector-ID windows use the separate
+detector-incident commit rule described in section 6; the two rules are not
+interchangeable.
+
 ### 2.1 Definitions
 
 | Concept | Meaning |
@@ -176,9 +181,18 @@ writes the actual local graphs and maps to `PREFIX.windows.json`. With real
 syndromes from `--shots` or `--sample-shots`, `src/decoding.rs` converts those
 same local graphs into `EncodedWindow`s, instantiates the CPU
 `ParallelWindowDecoder::from_encoded`, and verifies global residual/parity before
-writing `PREFIX.corrections.json`. It requires complete time slices, unique
-commit ownership and explicit `t` coordinates, and checks the cut graphs'
-edge endpoints, weights and global index maps before solving. The original
+writing `PREFIX.corrections.json`. It requires complete time slices and explicit
+`t` coordinates. Top windows own all edges incident to their commit detectors,
+including either commit/buffer seam; buffer-only and rewired outer-cut edges
+remain tentative. All real neighbours of a top commit must therefore be in its
+window. Bottom windows own their full closed graphs. Every detector and global
+edge must have exactly one owner, including the first/last time slices; missing
+buffers, unowned edges and conflicting owners are rejected before decoding.
+This preserves the local correction parity at every top commit detector and
+avoids leaving the edge at a bottom→top seam uncommittable. It does not establish
+global minimum weight or matchability of arbitrary residuals in a closed bottom
+graph. The adapter also checks the cut graphs' edge endpoints, weights and global
+index maps before solving. The original
 programmatic `WindowSpec`/`build_window_initializer`
 path remains separate; detector-ID annotations are **not** automatically
 translated into time-interval specs. Both CPU paths run sequential window loops.
@@ -199,7 +213,9 @@ translated into time-interval specs. Both CPU paths run sequential window loops.
 ## 8. Testing
 
 * `cargo test --locked --lib decoding` — root toolchain's real two-layer
-  graph/shot bridge and fail-closed schedule checks.
+  graph/shot bridge and fail-closed schedule checks, both seam orientations,
+  artificial-event handoff and all 16 fault subsets of a five-detector line
+  under forward, reversed and uneven detector times.
 
 * `cargo test --release --locked --manifest-path src/cpu/blossom/Cargo.toml --lib parallel_window`
   — programmatic CPU window decoder tests.
@@ -208,3 +224,7 @@ translated into time-interval specs. Both CPU paths run sequential window loops.
   (no Rust toolchain). With Cargo and Stim installed, run
   `RUN_RUST_TESTS=1 python -m unittest tests.test_rust_cli` for actual CLI
   window cutting, supplied/sampled shots, parity, multi-label edges, and errors.
+  This includes the three-window alternating seam fixture, replay of the saved
+  tiny shots without resampling, and syndrome consistency on 64 sampled shots
+  of a distance-3, 12-round memory with three disjoint top and two bottom windows.
+  The memory check is not a statistical logical-error-rate benchmark.

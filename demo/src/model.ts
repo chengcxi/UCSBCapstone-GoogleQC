@@ -78,14 +78,13 @@ export function parityToggle(start: number[], supports: number[][]): number[] {
   return [...parity].sort((a, b) => a - b);
 }
 
-/** Reconstruct *only the committed* layer split from the same half-open
- * midpoint ownership rule used by src/decoding.rs. Tentative MWPM edges are
+/** Reconstruct *only the committed* layer split from the same detector-incident
+ * ownership rule used by src/decoding.rs. Tentative MWPM edges are
  * not exported by the CLI and are deliberately not invented for this view. */
 export function traceShot(artifacts: Artifacts, shot: Shot): ShotTrace {
   const { graph, windows } = artifacts;
   const times = graph.detector_coordinates.map(coords => coords[2]);
   if (times.some(time => !Number.isFinite(time))) throw new Error('Missing detector time coordinate');
-  const uniqueTimes = [...new Set(times)].sort((a, b) => a - b);
   const topOwned = new Set<number>();
   const plans = graph.window_annotations.windows;
 
@@ -93,18 +92,22 @@ export function traceShot(artifacts: Artifacts, shot: Shot): ShotTrace {
     const cut = windows.windows.find(window => window.window_id === plan.id);
     if (!cut) throw new Error(`Missing cut graph for ${plan.id}`);
     const members = new Set([...plan.commit, ...plan.buffer]);
-    const commitTimes = plan.commit.map(id => times[id]);
-    const start = Math.min(...commitTimes);
-    const end = uniqueTimes.find(time => time > Math.max(...commitTimes)) ?? Infinity;
+    const commit = new Set(plan.commit);
     for (const edgeId of cut.edge_map) {
       const edge = graph.edge_metadata[edgeId];
-      if (!edge.detectors.every(id => members.has(id))) continue; // temporal edge
-      const mid = edge.detectors.reduce((sum, id) => sum + times[id], 0) / edge.detectors.length;
-      if (mid >= start && mid < end) topOwned.add(edgeId);
+      if (!edge.detectors.some(id => commit.has(id))) continue; // buffer-only or temporal edge
+      if (!edge.detectors.every(id => members.has(id))) {
+        throw new Error(`Insufficient buffer for commit edge ${edgeId} in ${plan.id}`);
+      }
+      if (topOwned.has(edgeId)) throw new Error(`Overlapping top ownership for edge ${edgeId}`);
+      topOwned.add(edgeId);
     }
   }
 
   const bottomAvailable = new Set(windows.windows.filter(window => window.layer === 1).flatMap(window => window.edge_map));
+  if ([...bottomAvailable].some(edge => topOwned.has(edge))) {
+    throw new Error('Overlapping top and bottom edge ownership');
+  }
   const topEdges = shot.committed_edges.filter(edge => topOwned.has(edge));
   const bottomEdges = shot.committed_edges.filter(edge => !topOwned.has(edge));
   if (bottomEdges.some(edge => !bottomAvailable.has(edge))) {

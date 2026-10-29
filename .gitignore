@@ -56,6 +56,8 @@ bin/*
 !/examples/parallel_window_windows.json
 !/examples/tiny-windows.json
 !/examples/seam-shots.json
+!/examples/alternating-windows.json
+!/examples/alternating-shots.json
 # Visual demo sources and checked-in captures from the real Rust CLI.
 !/demo/package.json
 !/demo/package-lock.json

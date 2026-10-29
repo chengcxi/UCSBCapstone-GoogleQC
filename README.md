@@ -227,8 +227,23 @@ No upstream `micro_blossom` executable or FPGA is needed for the CPU path.
 `residual_syndrome`; unsolvable shots or incomplete window schedules fail before
 publishing outputs. For decoding, every detector needs a time coordinate,
 windows must cover complete contiguous time slices, and every detector must
-belong to exactly one commit across both layers. The CPU window loop is sequential
+belong to exactly one commit across both layers. A top window owns every edge
+incident to its commit detectors, including edges into either buffer; its buffer
+must include every real neighbour of those detectors. Buffer-only and rewired
+outer-cut edges remain tentative. Bottom windows own their full closed graphs.
+Every global edge must have exactly one commit owner; plans with missing buffer
+coverage, unowned edges or conflicting owners fail before decoding.
+The CPU window loop is sequential
 (today's *software* end-to-end path, not hardware parallelism).
+
+The three-window regression example exercises both A0→B0 and B0→A1 seams,
+including an artificial event passed from A1's earlier buffer to B0:
+
+```sh
+cargo run --locked -- compile examples/alternating-seam.dem --kind dem \
+  --windows examples/alternating-windows.json --shots examples/alternating-shots.json \
+  --output artifacts/alternating --python .venv/bin/python
+```
 
 `examples/parallel_window_windows.json` illustrates a richer window description,
 but its extra keys are not accepted by the strict `--windows` input loader.
