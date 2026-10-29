@@ -103,7 +103,13 @@ jobs:
           cargo metadata --locked --no-deps --format-version 1 --manifest-path src/cpu/blossom-nostd/Cargo.toml > /dev/null
           cargo metadata --locked --no-deps --format-version 1 --manifest-path src/cpu/embedded/Cargo.toml > /dev/null
       - name: Test parallel-window decoder
-        run: cargo test --release --locked --manifest-path src/cpu/blossom/Cargo.toml --lib parallel_window -- --nocapture
+        shell: bash
+        run: |
+          set -o pipefail
+          CARGO_TERM_COLOR=never cargo test --release --locked --manifest-path src/cpu/blossom/Cargo.toml --lib parallel_window -- --nocapture 2>&1 | tee /tmp/microblossom-window-tests.log || {
+            python3 .github/scripts/annotate_cargo_failure.py 'Parallel-window CPU tests' /tmp/microblossom-window-tests.log
+            exit 1
+          }
 
   demo:
     runs-on: ubuntu-latest

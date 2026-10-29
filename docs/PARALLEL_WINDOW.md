@@ -86,8 +86,11 @@ only in how `t_start` and `commit_*` are chosen:
   one cycle (Tan Fig. 2).
 
 * **Contiguous** (`WindowScheme::Contiguous`): the time axis is partitioned
-  into `c`-sized blocks; each block's window is the block plus a `b` buffer
-  on each side.  Seams are block boundaries.
+  into `c`-sized commit blocks alternating between top/open and bottom/closed.
+  Only top blocks get a `b` buffer on each side; bottom blocks are fully
+  committed without buffers. This separates top commits so nearest-neighbour
+  seam edges have a single owner. Graph validation still rejects insufficient
+  buffers or long edges connecting separate top commits.
 
 All three satisfy the invariant that every error chain of length `≤d` is fully
 contained in at least one window when `c=b=d`.

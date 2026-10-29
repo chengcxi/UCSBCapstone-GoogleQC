@@ -946,6 +946,42 @@ mod tests {
     }
 
     #[test]
+    fn contiguous_generated_windows_preserve_all_syndromes_with_full_context() {
+        let (global, edge_obs) = tiny_line_graph();
+        let cfg = WindowGenerationConfig {
+            commit_size: 1.0,
+            buffer_size: 4.0,
+            scheme: WindowScheme::Contiguous,
+        };
+        let windows = cfg.generate(0.0, 4.0);
+        let decoder = ParallelWindowDecoder::new(global.clone(), windows, edge_obs, 1);
+        let virtuals = global.virtual_vertices.iter().copied().collect();
+        for mask in 0..16 {
+            let defects: Vec<_> = (0..4).filter(|d| mask & (1 << d) != 0).collect();
+            let result = decoder.decode(defects.clone());
+            let mut residual = defects.into_iter().collect();
+            for &eid in &result.committed_edges {
+                toggle_global_edge(&mut residual, &global, &virtuals, eid);
+            }
+            assert!(residual.is_empty(), "syndrome mask {mask}: {residual:?}");
+            assert_eq!(result.logical_parity, vec![result.committed_edges.contains(&1)]);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "claimed by multiple top windows")]
+    fn adjacent_top_commits_still_reject_shared_edges() {
+        let (global, edge_obs) = tiny_line_graph();
+        let windows = (0..4).map(|i| WindowSpec {
+            id: format!("old-C{i}"), layer: WindowLayer::Top,
+            t_start: 0.0, t_end: 4.0,
+            commit_start: i as f64, commit_end: (i + 1) as f64,
+            boundary: WindowBoundary::Open,
+        }).collect();
+        ParallelWindowDecoder::new(global, windows, edge_obs, 1);
+    }
+
+    #[test]
     fn generate_riverlane_windows() {
         let cfg = WindowGenerationConfig {
             commit_size: 2.0,

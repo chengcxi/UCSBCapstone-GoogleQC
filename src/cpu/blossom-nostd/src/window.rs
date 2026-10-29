@@ -165,9 +165,9 @@ pub enum WindowScheme {
         /// Step `s` (core size).
         s: f64,
     },
-    /// Contiguous partition: time is divided into `commit_size` blocks; each
-    /// block's window is the block plus a buffer on each side.  Seams are the
-    /// block boundaries.
+    /// Contiguous partition into alternating top and bottom commit blocks.
+    /// Top blocks have buffers on each side; bottom blocks are closed and
+    /// fully committed. A bottom block separates neighbouring top commits.
     Contiguous,
 }
 
@@ -338,32 +338,15 @@ impl WindowGenerationConfig {
             if commit_start >= t_max {
                 break;
             }
-            let t_start = (commit_start - b).max(t_min);
-            let t_end = (commit_end + b).min(t_max);
+            let top = i % 2 == 0;
             windows.push(WindowSpec {
                 id: format!("C{i}"),
-                layer: WindowLayer::Top,
-                t_start,
-                t_end,
+                layer: if top { WindowLayer::Top } else { WindowLayer::Bottom },
+                t_start: if top { (commit_start - b).max(t_min) } else { commit_start },
+                t_end: if top { (commit_end + b).min(t_max) } else { commit_end },
                 commit_start,
                 commit_end,
-                boundary: WindowBoundary::Open,
-            });
-        }
-        // Seams as bottom layer: one per boundary between commits
-        for i in 0..num_blocks.saturating_sub(1) {
-            let seam = t_min + (i + 1) as f64 * c;
-            if seam <= t_min || seam >= t_max {
-                continue;
-            }
-            windows.push(WindowSpec {
-                id: format!("Seam{i}"),
-                layer: WindowLayer::Bottom,
-                t_start: seam,
-                t_end: seam + 1.0, // single layer seam; width 1 time unit
-                commit_start: seam,
-                commit_end: seam + 1.0,
-                boundary: WindowBoundary::Closed,
+                boundary: if top { WindowBoundary::Open } else { WindowBoundary::Closed },
             });
         }
         windows.sort_by(|a, b| a.t_start.partial_cmp(&b.t_start).unwrap());
@@ -441,8 +424,38 @@ mod tests {
         };
         let windows = cfg.generate(0.0, 30.0);
         // 3 blocks: [0,10),[10,20),[20,30)
-        assert_eq!(windows.iter().filter(|w| w.layer == WindowLayer::Top).count(), 3);
-        assert_eq!(windows.iter().filter(|w| w.layer == WindowLayer::Bottom).count(), 2);
+        assert_eq!(windows.len(), 3);
+        assert_eq!(windows.iter().filter(|w| w.layer == WindowLayer::Top).count(), 2);
+        assert_eq!(windows.iter().filter(|w| w.layer == WindowLayer::Bottom).count(), 1);
+        let bottom = windows.iter().find(|w| w.layer == WindowLayer::Bottom).unwrap();
+        assert_eq!((bottom.t_start, bottom.t_end), (10.0, 20.0));
+        assert_eq!(bottom.boundary, WindowBoundary::Closed);
+        for t in 0..30 {
+            assert_eq!(windows.iter().filter(|w| w.is_commit(t as f64)).count(), 1);
+        }
+        for w in &windows {
+            assert!(w.validate().is_ok());
+        }
+    }
+
+    #[test]
+    fn contiguous_partition_clips_final_top_or_bottom_block() {
+        let cfg = WindowGenerationConfig {
+            commit_size: 2.0, buffer_size: 2.0, scheme: WindowScheme::Contiguous,
+        };
+        for end in [1.0, 3.0, 5.0, 7.0] {
+            let windows = cfg.generate(0.0, end);
+            assert_eq!(windows.first().unwrap().commit_start, 0.0);
+            assert_eq!(windows.last().unwrap().commit_end, end);
+            for pair in windows.windows(2) {
+                assert_eq!(pair[0].commit_end, pair[1].commit_start);
+                assert_ne!(pair[0].layer, pair[1].layer);
+            }
+            for w in windows {
+                assert!(w.validate().is_ok());
+                assert!(w.t_start >= 0.0 && w.t_end <= end);
+            }
+        }
     }
 
     #[test]

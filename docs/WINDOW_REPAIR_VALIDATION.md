@@ -29,3 +29,15 @@ Change `--buffer-slices` and the output suffix for the other rows. Raw summaries
 ## Additional edge-coverage regression tests
 
 Imported from `fix/window-commit-boundaries`: five-detector alternating top/bottom/top windows, all 16 fault subsets under forward, reversed, and uneven detector times, missing owned cut edges, and unowned edges between closed bottom windows. The CLI integration suite also exercises both seam directions, saved-shot replay, and a 64-shot distance-3 memory with three top and two bottom windows. Existing pre-layer-1 residual checks, incident-edge oracle, and fully committed full-graph tests remain in place.
+
+## Standalone CPU CI regression
+
+The standalone `parallel_window` tests exposed a stale `Contiguous` generator: it created a top commit for every adjacent block, so incident-edge ownership correctly rejected shared edges. The generator now alternates top/open buffered blocks with bottom/closed fully committed blocks. Commit intervals partition the experiment, including clipped final blocks, without the old overlapping one-cycle seam windows. Graph-specific buffer and ownership checks remain enforced.
+
+Validation: all 6 standalone CPU parallel-window tests passed, including all 16 syndromes of the four-detector line with full context and rejection of the former adjacent-top layout. All 11 geometry/oracle tests and 27 root library tests passed. Reproduce the formerly failing CI suite with:
+
+```sh
+cargo test --release --locked --manifest-path src/cpu/blossom/Cargo.toml --lib parallel_window -- --nocapture
+```
+
+CI now publishes detailed failure annotations for this suite as well as the root suite.
