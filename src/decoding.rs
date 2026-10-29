@@ -173,25 +173,18 @@ pub fn prepare_decoder(
                 ));
             }
         }
-        // Half-open time interval [first committed slice, next global slice).
-        // A crossing edge's midpoint can therefore belong to the commit even
-        // when its far endpoint is in the buffer. A physical boundary edge is
-        // dated by its single real detector, never by the synthetic vertex.
-        let commit_start = times[first_commit];
-        let commit_end = times.get(last_commit + 1).copied().unwrap_or(f64::INFINITY);
+        // Retain every selected edge incident to a committed detector.
+        // Cutting one of these edges would change that detector's parity.
         let mut commit_edges = BTreeSet::new();
         if plan.layer == 0 {
-            for &eid in &cut.edge_map {
-                let detectors = &graph.edge_metadata[eid].detectors;
-                if !detectors.iter().all(|d| members.contains(d)) {
-                    continue; // temporal virtual edge: tentative only
-                }
-                let mid = if detectors.len() == 1 {
-                    detector_times[detectors[0]]
-                } else {
-                    detector_times[detectors[0]] * 0.5 + detector_times[detectors[1]] * 0.5
-                };
-                if (commit_start..commit_end).contains(&mid) {
+            for (eid, edge) in graph.edge_metadata.iter().enumerate() {
+                if edge.detectors.iter().any(|d| commit.contains(d)) {
+                    if !edge.detectors.iter().all(|d| members.contains(d)) {
+                        return Err(format!(
+                            "window {} commit incident edge {eid} crosses the outer boundary; enlarge its buffer",
+                            plan.id
+                        ));
+                    }
                     commit_edges.insert(eid);
                 }
             }
@@ -207,6 +200,7 @@ pub fn prepare_decoder(
             positions: positions(&cut.positions),
             detector_map: cut.detector_map.clone(),
             edge_map: cut.edge_map.clone(),
+            commit_detectors: plan.commit.clone(),
             commit_edges: commit_edges.into_iter().collect(),
         });
     }
@@ -351,6 +345,91 @@ mod tests {
                 .shots
                 .iter()
                 .all(|shot| shot.logical_error == Some(false))
+        );
+    }
+
+    #[test]
+    fn incident_ownership_both_seams_and_full_graph() {
+        // Exhaust every syndrome, including both experiment endpoints.
+        for commit in [vec![1], vec![0], vec![2], vec![0, 1, 2]] {
+            let mut graph = seam_graph();
+            let others: Vec<_> = (0..3).filter(|d| !commit.contains(d)).collect();
+            graph.window_annotations["windows"][0]["commit"] = serde_json::json!(commit);
+            graph.window_annotations["windows"][0]["buffer"] = serde_json::json!(others);
+            if others.is_empty() {
+                graph.window_annotations["windows"]
+                    .as_array_mut()
+                    .unwrap()
+                    .truncate(1);
+            } else {
+                graph.window_annotations["windows"]
+                    .as_array_mut()
+                    .unwrap()
+                    .truncate(1);
+                let groups = if commit == vec![1] {
+                    vec![vec![0], vec![2]]
+                } else {
+                    vec![others.clone()]
+                };
+                for (i, group) in groups.iter().enumerate() {
+                    graph.window_annotations["windows"].as_array_mut().unwrap().push(serde_json::json!({
+                        "id": format!("B{i}"), "layer":1,"commit":group,"buffer":[],
+                        "temporal_boundary":"closed", "commit_buffer_seams":[], "outer_crossings":[]
+                    }));
+                }
+            }
+            let cut = build_window_graphs(&graph).unwrap();
+            let decoder = prepare_decoder(&graph, &cut).unwrap();
+            for mask in 0..8 {
+                let defects: Vec<_> = (0..3).filter(|d| mask & (1 << d) != 0).collect();
+                let result = decoder.decode_encoded_shot(&defects).unwrap();
+                assert!(
+                    graph
+                        .evaluate_correction(&result.committed_edges, &defects)
+                        .unwrap()
+                        .residual_syndrome
+                        .is_empty()
+                );
+                if commit == vec![0, 1, 2] {
+                    assert_eq!(result.logical_parity, vec![mask & 1 != 0]);
+                }
+                if commit == vec![1] && mask == 3 {
+                    assert_eq!(result.committed_edges, vec![0]);
+                }
+                if commit == vec![1] && mask == 6 {
+                    assert_eq!(result.committed_edges, vec![1]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_two_top_windows_claiming_one_edge() {
+        let mut graph = seam_graph();
+        graph.window_annotations["windows"][1] = serde_json::json!({
+            "id":"A1", "layer":0, "commit":[1,2], "buffer":[0],
+            "temporal_boundary":"open", "commit_buffer_seams":[], "outer_crossings":[]
+        });
+        let cut = build_window_graphs(&graph).unwrap();
+        assert!(
+            prepare_decoder(&graph, &cut)
+                .err()
+                .unwrap()
+                .contains("overlapping or unmapped top commits")
+        );
+    }
+
+    #[test]
+    fn rejects_insufficient_context() {
+        let mut graph = seam_graph();
+        graph.window_annotations["windows"][0]["commit"] = serde_json::json!([1]);
+        graph.window_annotations["windows"][0]["buffer"] = serde_json::json!([2]);
+        let cut = build_window_graphs(&graph).unwrap();
+        assert!(
+            prepare_decoder(&graph, &cut)
+                .err()
+                .unwrap()
+                .contains("enlarge its buffer")
         );
     }
 

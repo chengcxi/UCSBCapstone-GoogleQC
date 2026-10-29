@@ -56,8 +56,10 @@ A one-detector DEM error has a physical boundary endpoint and is not automatical
 an artificial temporal cut. A closed layer-1 *temporal* boundary must not remove
 valid physical boundary edges. For shot decoding, the runtime requires complete,
 contiguous time slices with explicit `t` coordinates and coverage by commit
-regions. It dates two-detector edges by midpoint (one-detector physical boundary
-edges by their real detector) and never commits a rewired outer-cut edge. Ambiguous
+regions. It commits every selected edge touching a top commit detector, requiring all
+real endpoints inside commit plus buffer. Insufficient buffers are rejected.
+After layer 0, residuals inside top commits or outside layer-1 coverage fail
+before layer 1 runs. A single fully committed full-graph window is supported. Ambiguous
 ownership, uncovered detectors and unmatched residual syndromes are errors.
 
 ## Rust output

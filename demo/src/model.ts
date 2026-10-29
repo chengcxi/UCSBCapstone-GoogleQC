@@ -78,14 +78,11 @@ export function parityToggle(start: number[], supports: number[][]): number[] {
   return [...parity].sort((a, b) => a - b);
 }
 
-/** Reconstruct *only the committed* layer split from the same half-open
- * midpoint ownership rule used by src/decoding.rs. Tentative MWPM edges are
- * not exported by the CLI and are deliberately not invented for this view. */
+/** Attribute committed corrections by incident-detector ownership. */
 export function traceShot(artifacts: Artifacts, shot: Shot): ShotTrace {
   const { graph, windows } = artifacts;
   const times = graph.detector_coordinates.map(coords => coords[2]);
   if (times.some(time => !Number.isFinite(time))) throw new Error('Missing detector time coordinate');
-  const uniqueTimes = [...new Set(times)].sort((a, b) => a - b);
   const topOwned = new Set<number>();
   const plans = graph.window_annotations.windows;
 
@@ -93,14 +90,17 @@ export function traceShot(artifacts: Artifacts, shot: Shot): ShotTrace {
     const cut = windows.windows.find(window => window.window_id === plan.id);
     if (!cut) throw new Error(`Missing cut graph for ${plan.id}`);
     const members = new Set([...plan.commit, ...plan.buffer]);
-    const commitTimes = plan.commit.map(id => times[id]);
-    const start = Math.min(...commitTimes);
-    const end = uniqueTimes.find(time => time > Math.max(...commitTimes)) ?? Infinity;
+    const commit = new Set(plan.commit);
     for (const edgeId of cut.edge_map) {
       const edge = graph.edge_metadata[edgeId];
-      if (!edge.detectors.every(id => members.has(id))) continue; // temporal edge
-      const mid = edge.detectors.reduce((sum, id) => sum + times[id], 0) / edge.detectors.length;
-      if (mid >= start && mid < end) topOwned.add(edgeId);
+      if (!edge.detectors.every(id => members.has(id))) {
+        if (edge.detectors.some(id => commit.has(id))) throw new Error(`Insufficient buffer for ${plan.id}, edge ${edgeId}`);
+        continue;
+      }
+      if (edge.detectors.some(id => commit.has(id))) {
+        if (topOwned.has(edgeId)) throw new Error(`Multiple top windows claim edge ${edgeId}`);
+        topOwned.add(edgeId);
+      }
     }
   }
 
@@ -111,6 +111,10 @@ export function traceShot(artifacts: Artifacts, shot: Shot): ShotTrace {
     throw new Error('Cannot attribute a correction edge to either decoder layer');
   }
   const topResidual = parityToggle(shot.defects, topEdges.map(id => graph.edge_metadata[id].detectors));
+  const topCommit = new Set(plans.filter(w => w.layer === 0).flatMap(w => w.commit));
+  const bottomCoverage = new Set(plans.filter(w => w.layer === 1).flatMap(w => w.commit));
+  if (topResidual.some(d => topCommit.has(d))) throw new Error('Residual inside top commit after layer 0');
+  if (topResidual.some(d => !bottomCoverage.has(d))) throw new Error('Residual outside layer-1 coverage');
   const finalResidual = parityToggle(topResidual, bottomEdges.map(id => graph.edge_metadata[id].detectors));
   const predicted = parityToggle([], shot.committed_edges.map(id => graph.edge_metadata[id].observables));
   if (JSON.stringify(finalResidual) !== JSON.stringify(shot.residual_syndrome)

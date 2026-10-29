@@ -30,7 +30,7 @@ There are **two related ways** to construct software windows:
 - [`src/window.rs`](../../src/window.rs) uses validated `Graph.window_annotations` and `commit ∪ buffer` **detector IDs** to build `WindowGraph` values. Each carries an `initializer`, `positions`, `edge_metadata`, `detector_map` (local → global detector, or `None` for virtual vertices) and `edge_map` (local → global edge). The CLI now exports these as `PREFIX.windows.json` and passes the same graphs, with full observable-label lists, to the CPU [`ParallelWindowDecoder::from_encoded`](../../src/cpu/blossom/src/parallel_window.rs).
 - [`src/cpu/blossom-nostd/src/window.rs`](../../src/cpu/blossom-nostd/src/window.rs) still defines programmatic `WindowSpec` **time intervals** and Riverlane, Sandwich and Contiguous generators. [`build_window_initializer`](../../src/cpu/blossom/src/parallel_window.rs) constructs local graphs from these specs for the original CPU API. The CLI does **not** silently translate an arbitrary detector-ID plan into a `WindowSpec`.
 
-The CLI's [adapter](../../src/decoding.rs) instead requires complete, contiguous time slices and uses the midpoint of real detector times to determine which local top edges belong to each commit. It rejects missing time coordinates, overlapping commits across layers, uncovered detectors and mismatched local/global edge maps before decoding. The original `WindowSpec` CPU constructor uses one optional observable per edge; the new encoded-window constructor supports the toolchain graph's **multiple** observable labels per edge.
+The CLI's [adapter](../../src/decoding.rs) instead requires complete, contiguous time slices and commits every edge touching a top commit detector. It rejects missing time coordinates, overlapping commits across layers, uncovered detectors and mismatched local/global edge maps before decoding. The original `WindowSpec` CPU constructor uses one optional observable per edge; the new encoded-window constructor supports the toolchain graph's **multiple** observable labels per edge.
 
 ### What happens to an edge at a time cut?
 
@@ -58,7 +58,7 @@ A temporal virtual vertex represents an **artificial window cut**, not a physica
 | Time cuts | Open; defects may match a temporal virtual vertex. | Closed; no temporal virtual escape. |
 | Region | Commit with buffers on either side where the time range permits. | Whole window committed; no buffer. |
 | Input | Global defects in the window. | Original defects in the window **XOR** artificial defects from neighbouring top commits. |
-| Output | Commit only tentative edges whose midpoint is in the half-open commit interval; discard tentative buffer edges. | Commit the selected local correction in full. |
+| Output | Commit only tentative edges touching a commit detector; discard tentative buffer edges. | Commit the selected local correction in full. |
 | Observable update | XOR committed edge labels into one global prediction. | XOR into that **same** prediction. |
 
 The following is a **dependency diagram**, not a claim that the current CPU loop runs concurrently:
@@ -88,7 +88,7 @@ sequenceDiagram
 The [oracle](../../src/cpu/blossom-nostd/src/window_oracle.rs) expresses the global accounting with symmetric difference (XOR):
 
 ```text
-C_top = {tentative edges whose midpoint is in a top window's commit interval}
+C_top = {tentative edges touching a top commit detector}
 R     = S XOR boundary(C_top)
 O     = XOR of observable labels on committed edges from BOTH layers
 ```

@@ -44,7 +44,7 @@ It is the technical companion to the implementation in
 | Concept | Meaning |
 |---|---|
 | **Window** | A spacetime subgraph `G_W = (V_W, E_W)` where `V_W = { v \| t(v)∈[t_start,t_end) }`. |
-| **Commit region** | `C_W = { e∈E_W \| t_mid(e)∈[commit_start,commit_end) }`.  Only edges whose midpoint lies in the commit interval are committed. |
+| **Commit region** | `C_W = { e∈E_W \| a real endpoint of e is in the commit }`.  Every selected edge incident to a commit detector is committed. |
 | **Buffer region** | `B_W = G_W \ C_W`.  Tentative edges here are discarded. |
 | **Seam** | The boundary `commit_start` or `commit_end` between `C` and `B`.  A committed edge that has one endpoint outside `C` leaves an artificial detection event on the seam. |
 | **Residual syndrome** | `S_res = S_in ⊕ ∂(E_committed)` — the original syndrome XOR the boundary of committed edges.  On a correctly chosen commit it contains only seam detectors. |
@@ -59,7 +59,7 @@ contribute a single detector).  Repeated edges cancel (`e⊕e = 0`).
 | Property | Layer 0 (top) | Layer 1 (bottom) |
 |---|---|---|
 | Temporal boundary | **Open** — an error may leave the window through the time cut at the same cost as the original crossing edge.  Modelled by a temporal virtual node per cut with edges that copy the weight/observable of each original crossing edge. | **Closed** — no temporal virtual; a defect must be matched inside the window. |
-| Commit rule | `t_mid ∈ [commit_start,commit_end)` (strict sub-interval). | Fully committed: `commit = window` (no buffer). |
+| Commit rule | At least one real endpoint in the commit; all real endpoints in the window. | Fully committed: `commit = window` (no buffer). |
 | Input syndrome | `S ∩ V_W` (global defects whose detector lies inside the window). | `(S ∩ V_W) ⊕ S_artificial` where `S_artificial` is the XOR of flipped outside endpoints of all layer-0 commits whose seam lies inside the window. |
 | Spatial boundaries | Preserved in both layers (global virtual vertices are always included). |
 | Logical observable | Commits to the global parity (same `logical_parity` accumulator). |
@@ -102,7 +102,7 @@ parity   = ⊕_{e∈E_committed} obs(e)       // global logical prediction
 ```
 
 `commit_tentative` implements the commit rule above and checks:
-* `t_mid` inside commit → committed,
+* real endpoint inside commit → committed,
 * otherwise discarded,
 * overlapping commits → panic (validation error),
 * flipped outside endpoints → artificial defects.
@@ -132,7 +132,7 @@ the Micro Blossom CPU controller:
    * run an inner MWPM solver (`SolverEmbeddedComb` with
      `support_offloading=false, support_layer_fusion=false` for exactness;
      any `PrimalDualSolver` can be substituted),
-   * split its subgraph into committed (midpoint inside commit) vs buffer,
+   * split its subgraph into committed (incident to a commit detector) vs buffer,
    * update `global_committed` and `logical_parity`,
    * collect `flipped_outside` = boundary of committed edges restricted to
      detectors whose `t` is outside the commit → artificial syndrome.
@@ -208,3 +208,5 @@ translated into time-interval specs. Both CPU paths run sequential window loops.
   (no Rust toolchain). With Cargo and Stim installed, run
   `RUN_RUST_TESTS=1 python -m unittest tests.test_rust_cli` for actual CLI
   window cutting, supplied/sampled shots, parity, multi-label edges, and errors.
+
+Top commits require sufficient buffers for every incident edge. Duplicate top edge ownership is rejected. Before layer 1, any residual in a top commit or outside bottom coverage is an error. Zero residual establishes correction consistency, not full-graph logical accuracy.

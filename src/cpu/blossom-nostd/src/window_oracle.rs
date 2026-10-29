@@ -41,9 +41,7 @@ pub struct OracleEdge {
     pub endpoints: (Option<DetectorId>, Option<DetectorId>),
     /// Observable(s) flipped by this error mechanism.  Empty = no logical effect.
     pub observables: Vec<ObservableId>,
-    /// Midpoint `t` coordinate of the edge (average of endpoint `t`).  Used to
-    /// decide commit vs buffer membership.  For boundary edges the virtual
-    /// endpoint is assigned the window's boundary `t`.
+    /// Legacy midpoint metadata; ownership uses real endpoint detector times.
     pub t_mid: f64,
 }
 
@@ -79,11 +77,7 @@ pub struct CommitResult {
 /// `committed_edges` is the set of global edge ids whose correction has been
 /// committed.  The boundary of an edge is the set of its endpoint detectors
 /// (0, 1 or 2 of them).  Repeated edges cancel via XOR.
-pub fn residual_syndrome(
-    input_syndrome: &[DetectorId],
-    committed_edges: &[EdgeId],
-    graph: &OracleGraph,
-) -> Vec<DetectorId> {
+pub fn residual_syndrome(input_syndrome: &[DetectorId], committed_edges: &[EdgeId], graph: &OracleGraph) -> Vec<DetectorId> {
     let mut residual: BTreeSet<DetectorId> = input_syndrome.iter().copied().collect();
     // Validate uniqueness as the toolchain does.
     debug_assert!(
@@ -125,8 +119,8 @@ fn toggle(set: &mut BTreeSet<usize>, value: usize) {
 /// Partition tentative corrections into committed vs discarded and compute the
 /// combined global parity.  `tentative_by_window` maps window id → list of
 /// global edge ids that the inner decoder returned for that window (the full
-/// subgraph, including buffer edges).  The oracle keeps an edge iff its
-/// `t_mid` lies inside the window's commit interval.
+/// subgraph, including buffer edges).  The oracle keeps an edge iff
+/// at least one real endpoint lies inside the window's commit interval.
 ///
 /// This is exactly the rule from the project vision:
 ///
@@ -136,9 +130,8 @@ fn toggle(set: &mut BTreeSet<usize>, value: usize) {
 /// > syndromes which contain artificial detection events, or detectors in
 /// > those crossing errors that sit on the seam."
 ///
-/// Crossing edges are handled naturally: their `t_mid` is on the seam, so they
-/// are either just inside or just outside the commit interval and contribute
-/// precisely one artificial detector at the seam endpoint outside the commit.
+/// Every edge touching a commit detector is retained, with all real endpoints
+/// required inside the window. Buffer-only edges are discarded.
 pub fn commit_tentative(
     tentative_by_window: &BTreeMap<String, Vec<EdgeId>>,
     windows: &[WindowSpec],
@@ -159,7 +152,16 @@ pub fn commit_tentative(
             .unwrap_or_else(|| panic!("window id {} not in spec", win_id));
         for &eid in edge_ids {
             let edge = &graph.edges[eid];
-            let inside_commit = edge.t_mid >= win.commit_start && edge.t_mid < win.commit_end;
+            let endpoints: Vec<_> = [edge.endpoints.0, edge.endpoints.1].iter().copied().flatten().collect();
+            let inside_commit = endpoints.iter().any(|&d| win.is_commit(graph.detector_t[d]));
+            if inside_commit {
+                assert!(
+                    endpoints.iter().all(|&d| win.contains(graph.detector_t[d])),
+                    "window {} commit incident edge {} crosses outer boundary; enlarge buffer",
+                    win.id,
+                    eid
+                );
+            }
             if inside_commit {
                 if !commit_t_set.insert(eid) {
                     // Same global edge committed by two windows would imply overlapping
@@ -207,13 +209,8 @@ pub fn validate_window_layers(windows: &[WindowSpec]) -> Result<(), String> {
                 if w.boundary != WindowBoundary::Closed {
                     return Err(format!("bottom window {} must be temporally closed", w.id));
                 }
-                if (w.commit_start - w.t_start).abs() > 1e-9
-                    || (w.commit_end - w.t_end).abs() > 1e-9
-                {
-                    return Err(format!(
-                        "bottom window {} must be fully committed (no buffer)",
-                        w.id
-                    ));
+                if (w.commit_start - w.t_start).abs() > 1e-9 || (w.commit_end - w.t_end).abs() > 1e-9 {
+                    return Err(format!("bottom window {} must be fully committed (no buffer)", w.id));
                 }
             }
         }
@@ -230,7 +227,8 @@ pub fn validate_window_layers(windows: &[WindowSpec]) -> Result<(), String> {
             if commits[i].0 < commits[i - 1].1 - 1e-9 {
                 return Err(format!(
                     "overlapping commits in same layer: {} and {}",
-                    commits[i - 1].2, commits[i].2
+                    commits[i - 1].2,
+                    commits[i].2
                 ));
             }
         }
@@ -283,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn observable_parity() {
+    fn observable_parity_labels() {
         let g = tiny_graph();
         assert_eq!(observable_parity(&[0], &g), Vec::<usize>::new());
         assert_eq!(observable_parity(&[1], &g), vec![0]);
@@ -318,7 +316,7 @@ mod tests {
         tentative.insert("A0".into(), vec![0, 1]);
         tentative.insert("B0".into(), vec![]);
         let result = commit_tentative(&tentative, &windows, &g, &[0, 1]);
-        // Only edge 0 is inside A0 commit [0,1) (t_mid 0.5), edge 1 t_mid 1.5 is outside, discarded
+        // Only edge 0 touches A0 commit [0,1); edge 1 is buffer-only.
         assert_eq!(result.committed_edges, vec![0]);
         assert_eq!(result.observable_parity, Vec::<usize>::new());
         // residual = input [0,1] xor boundary(edge0) = {}? edge0 flips 0 and1, so residual empty -> no artificial seam
@@ -346,6 +344,27 @@ mod tests {
         // residual = [0,2] xor {0,1} = {1,2} -> D1 is artificial seam, D2 remains
         assert_eq!(result.residual_detectors, vec![1, 2]);
         assert_eq!(result.observable_parity, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn middle_commit_retains_both_incident_edges() {
+        let g = tiny_graph();
+        let windows = vec![WindowSpec {
+            id: "A0".into(),
+            layer: WindowLayer::Top,
+            t_start: 0.0,
+            t_end: 3.0,
+            commit_start: 1.0,
+            commit_end: 2.0,
+            boundary: WindowBoundary::Open,
+        }];
+        for (edges, syndrome) in [(vec![0], vec![0, 1]), (vec![1], vec![1, 2]), (vec![0, 1], vec![0, 2])] {
+            let mut tentative = BTreeMap::new();
+            tentative.insert("A0".into(), edges.clone());
+            let result = commit_tentative(&tentative, &windows, &g, &syndrome);
+            assert_eq!(result.committed_edges, edges);
+            assert!(result.residual_detectors.is_empty());
+        }
     }
 
     #[test]

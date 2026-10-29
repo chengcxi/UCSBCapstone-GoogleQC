@@ -9,7 +9,7 @@
 //! * **Layer 0 (top)** — windows have *open* time boundaries: an error that
 //!   leaves the window can be matched to a virtual time-boundary node.  Each
 //!   window contains a *commit* region (high-confidence) surrounded by
-//!   *buffer* regions.  Only the correction edges whose midpoint lies inside
+//!   *buffer* regions.  Only the correction edges that touch a real detector inside
 //!   the commit region are committed to the global prediction; the remaining
 //!   tentative edges are discarded.  Errors that cross the commit/buffer seam
 //!   create *artificial detection events* (detectors on the seam that are

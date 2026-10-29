@@ -254,6 +254,8 @@ pub struct EncodedWindow {
     pub edge_map: Vec<usize>,
     /// Global edges owned by the top commit; bottom windows commit every edge.
     pub commit_edges: Vec<usize>,
+    /// Explicit detector commit membership, used to check layer-0 parity.
+    pub commit_detectors: Vec<usize>,
 }
 
 /// Parallel-window decoder that wraps any micro-blossom inner solver.
@@ -296,6 +298,22 @@ impl ParallelWindowDecoder {
         for w in &windows {
             w.validate().expect("invalid window spec");
         }
+        let virtuals: BTreeSet<_> = global_graph.virtual_vertices.iter().copied().collect();
+        let mut claimed = BTreeSet::new();
+        for w in windows.iter().filter(|w| w.layer == WindowLayer::Top) {
+            for (eid, e) in global_graph.weighted_edges.iter().enumerate() {
+                let endpoints = [e.l, e.r];
+                let real: Vec<_> = endpoints.iter().copied().filter(|v| !virtuals.contains(v)).collect();
+                if real.iter().any(|&v| w.is_commit(global_graph.positions[v].t)) {
+                    assert!(
+                        real.iter().all(|&v| w.contains(global_graph.positions[v].t)),
+                        "window {} incident edge {eid} crosses outer boundary; enlarge buffer",
+                        w.id
+                    );
+                    assert!(claimed.insert(eid), "global edge {eid} claimed by multiple top windows");
+                }
+            }
+        }
         Self {
             global_graph,
             windows,
@@ -326,10 +344,8 @@ impl ParallelWindowDecoder {
                 }
             }
         }
-        if !encoded_windows.iter().any(|w| w.layer == WindowLayer::Top)
-            || !encoded_windows.iter().any(|w| w.layer == WindowLayer::Bottom)
-        {
-            return Err("decoding requires both open top and closed bottom windows".into());
+        if !encoded_windows.iter().any(|w| w.layer == WindowLayer::Top) {
+            return Err("decoding requires an open top window".into());
         }
         let mut ids = BTreeSet::new();
         let mut owned_top_edges = BTreeSet::new();
@@ -360,6 +376,9 @@ impl ParallelWindowDecoder {
                     None if virtuals.contains(&local) => {}
                     _ => return Err(format!("window {} has an invalid detector map", window.id)),
                 }
+            }
+            if window.commit_detectors.iter().any(|d| !seen_detectors.contains(d)) {
+                return Err(format!("window {} has an unmapped commit detector", window.id));
             }
             let mut local_edges = BTreeMap::new(); // global edge -> temporal crossing?
             for (local, &(l, r, weight)) in init.weighted_edges.iter().enumerate() {
@@ -394,6 +413,20 @@ impl ParallelWindowDecoder {
                 }
             }
             if window.layer == WindowLayer::Top {
+                let commit: BTreeSet<_> = window.commit_detectors.iter().copied().collect();
+                let expected: BTreeSet<_> = global_graph
+                    .weighted_edges
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| commit.contains(&e.l) || commit.contains(&e.r))
+                    .map(|(eid, _)| eid)
+                    .collect();
+                if expected != window.commit_edges.iter().copied().collect() {
+                    return Err(format!(
+                        "window {} must own every edge incident to its commit detectors",
+                        window.id
+                    ));
+                }
                 let mut local_commits = BTreeSet::new();
                 for &eid in &window.commit_edges {
                     if !local_edges.contains_key(&eid) || !local_commits.insert(eid) || !owned_top_edges.insert(eid) {
@@ -480,16 +513,23 @@ impl ParallelWindowDecoder {
             solver.solve_visualizer(&syndrome, None);
             let subgraph = solver.subgraph_visualizer(None);
 
-            // Determine committed edges: those whose midpoint t is inside commit
+            // Preserve parity at each commit detector by retaining all its edges.
             let mut committed_local: Vec<usize> = Vec::new();
             for &local_eid in &subgraph {
                 let (l, r, _) = init.weighted_edges[local_eid];
-                let tl = pos[l].t;
-                let tr = pos[r].t;
-                // For edges to temporal virtual, the virtual's t is at boundary, so midpoint is near boundary.
-                // That will be outside commit if the real endpoint is in buffer, as desired.
-                let t_mid = (tl + tr) / 2.0;
-                if t_mid >= window.commit_start && t_mid < window.commit_end {
+                let endpoints = [l, r];
+                let real = endpoints.iter().copied().filter(|v| !init.virtual_vertices.contains(v));
+                if real.clone().any(|v| window.is_commit(pos[v].t)) {
+                    let global_eid = maps.local_to_global_edge[local_eid];
+                    let edge = &self.global_graph.weighted_edges[global_eid];
+                    assert!(
+                        [edge.l, edge.r]
+                            .iter()
+                            .copied()
+                            .all(|v| self.global_graph.virtual_vertices.contains(&v)
+                                || window.contains(self.global_graph.positions[v].t)),
+                        "commit incident edge crosses outer window boundary; enlarge buffer"
+                    );
                     committed_local.push(local_eid);
                 }
             }
@@ -540,6 +580,23 @@ impl ParallelWindowDecoder {
             for det in flipped_outside {
                 toggle_count(&mut artificial_by_detector, det);
             }
+        }
+
+        let virtuals: BTreeSet<_> = self.global_graph.virtual_vertices.iter().copied().collect();
+        let mut residual: BTreeSet<_> = global_defects.iter().copied().collect();
+        for &eid in &global_committed {
+            toggle_global_edge(&mut residual, &self.global_graph, &virtuals, eid);
+        }
+        for &d in &residual {
+            let t = self.global_graph.positions[d].t;
+            assert!(
+                !self.windows.iter().any(|w| w.layer == WindowLayer::Top && w.is_commit(t)),
+                "layer 0 left residual detector {d} inside a top commit"
+            );
+            assert!(
+                self.windows.iter().any(|w| w.layer == WindowLayer::Bottom && w.contains(t)),
+                "layer 0 residual detector {d} is outside layer-1 coverage"
+            );
         }
 
         // --- Layer 1 : closed, fully committed -------------------------------
@@ -647,6 +704,19 @@ impl ParallelWindowDecoder {
                     toggle_global_edge(&mut residual, &self.global_graph, &global_virtuals, eid);
                 }
             }
+        }
+        for window in windows.iter().filter(|w| w.layer == WindowLayer::Top) {
+            if let Some(d) = window.commit_detectors.iter().find(|d| residual.contains(d)) {
+                return Err(format!("layer 0 left residual detector {d} inside top commit {}", window.id));
+            }
+        }
+        let bottom_coverage: BTreeSet<_> = windows
+            .iter()
+            .filter(|w| w.layer == WindowLayer::Bottom)
+            .flat_map(|w| w.detector_map.iter().flatten().copied())
+            .collect();
+        if let Some(d) = residual.iter().find(|d| !bottom_coverage.contains(d)) {
+            return Err(format!("layer 0 residual detector {d} is not covered by any layer-1 window"));
         }
         // All bottom windows consume the same top-layer residual. The final
         // boundary check below catches gaps, overlap and unmatched defects.
